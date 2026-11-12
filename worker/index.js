@@ -47,6 +47,26 @@ function validateCert(b){
  if(!safeUrl(verification_url)) throw new Error('Verification URL must use HTTPS');
  return {title,issuer,credential_id,verification_url,earned_on,expires_on:expires_on||null};
 }
+// V5: deterministic rule engine for demo-only workflows; no external service calls.
+async function applyWorkflow(env, certId, eventName, actorId) {
+ const cert=await env.DB.prepare('SELECT id,title,student_id,status,updated_at FROM certifications WHERE id=?').bind(certId).first();
+ if(!cert) return;
+ const rules=(await env.DB.prepare('SELECT id,action,priority,days_due FROM workflow_rules WHERE event=? AND enabled=1 ORDER BY created_at LIMIT 20').bind(eventName).all()).results;
+ for(const rule of rules){
+  const key=rule.id+':'+eventName+':'+certId+':'+cert.updated_at;
+  // UNIQUE event key avoids duplicate tasks from repeated deliveries.
+  if(rule.action==='task'){
+   const assigned=await env.DB.prepare("SELECT id FROM users WHERE role='reviewer' AND active=1 ORDER BY created_at ASC LIMIT 1").first();
+   const assignedId=assigned?.id||null;
+   const due=new Date(Date.now()+Math.max(1,Math.min(Number(rule.days_due)||3,30))*86400000).toISOString();
+   await env.DB.prepare(`INSERT OR IGNORE INTO workflow_tasks(id,event_key,certification_id,title,priority,status,assigned_to,due_at,created_by)
+    VALUES(?,?,?, ?,?,'open',?,?,?)`).bind(uuid(),key,certId,'Review '+cert.title,rule.priority,assignedId,due,actorId).run();
+   if(assignedId) await notify(env,assignedId,'Review task assigned','A certification requires review.',certId);
+  }else if(rule.action==='notify'){
+   await notify(env,cert.student_id,'Certification update',cert.title+' — '+eventName.replaceAll('_',' '),certId);
+  }
+ }
+}
 async function route(req,env,path){
  const method=req.method,segments=path.split('/').filter(Boolean), [root,id,action]=segments;
  if(method==='GET' && path==='/api/health') return json({status:'ok',service:'PGCC Certification Tracker API'});
@@ -109,7 +129,7 @@ async function route(req,env,path){
   if(u.role!=='student')return fail('Only students can submit credentials',403);
   const b=validateCert(await parseJSON(req)),id=uuid();
   await env.DB.prepare(`INSERT INTO certifications (id,student_id,title,issuer,credential_id,verification_url,earned_on,expires_on) VALUES (?,?,?,?,?,?,?,?)`).bind(id,u.id,b.title,b.issuer,b.credential_id,b.verification_url,b.earned_on,b.expires_on).run();
-  await audit(env,u.id,'certification_created',id);return json({id},201);
+  await audit(env,u.id,'certification_created',id);await applyWorkflow(env,id,'submitted',u.id);return json({id},201);
  });
  if(root==='api' && id==='certifications' && action){
   const certId=action,verb=segments[3];
@@ -122,7 +142,7 @@ async function route(req,env,path){
    if(c.student_id!==u.id||!['pending','needs_revision'].includes(c.status))return fail('This submission cannot be edited',403);
    const b=validateCert(await parseJSON(req));
    await env.DB.prepare(`UPDATE certifications SET title=?,issuer=?,credential_id=?,verification_url=?,earned_on=?,expires_on=?,status='pending',notes='',reviewed_by=NULL,reviewed_at=NULL,updated_at=? WHERE id=?`).bind(b.title,b.issuer,b.credential_id,b.verification_url,b.earned_on,b.expires_on,now(),certId).run();
-   await audit(env,u.id,'certification_updated',certId);return json({ok:true});
+   await audit(env,u.id,'certification_updated',certId);await applyWorkflow(env,certId,'submitted',u.id);return json({ok:true});
   });
   if(method==='POST'&&verb==='demo-evidence')return withAuth(req,env,async u=>{
    const c=await env.DB.prepare('SELECT * FROM certifications WHERE id=?').bind(certId).first();if(!c)return fail('Not found',404);
@@ -140,8 +160,10 @@ async function route(req,env,path){
    const c=await env.DB.prepare('SELECT * FROM certifications WHERE id=?').bind(certId).first();if(!c)return fail('Not found',404);
    if(c.status!=='pending')return fail('Only pending submissions can be reviewed',409);
    if(!c.proof_key && status==='approved')return fail('Record demo evidence before approval');
+   if(status==='approved'){const check=await env.DB.prepare('SELECT * FROM verification_checks WHERE certification_id=?').bind(certId).first();if(!check||!check.issuer_checked||!check.identifier_checked||!check.dates_checked||!check.evidence_reviewed)return fail('Complete all four manual review checklist items before approval',409);}
    await env.DB.prepare('UPDATE certifications SET status=?,notes=?,reviewed_by=?,reviewed_at=?,updated_at=? WHERE id=? AND status=?').bind(status,notes,u.id,now(),now(),certId,'pending').run();
-   await audit(env,u.id,'certification_reviewed',certId,{status});await notify(env,c.student_id,'Certification '+status.replace('_',' '),c.title+(notes?' — '+notes:''),certId);return json({ok:true});
+   await env.DB.prepare("UPDATE workflow_tasks SET status='completed',completed_at=? WHERE certification_id=? AND status='open'").bind(now(),certId).run();
+   await audit(env,u.id,'certification_reviewed',certId,{status});if(status==='needs_revision')await applyWorkflow(env,certId,'needs_revision',u.id);await notify(env,c.student_id,'Certification '+status.replace('_',' '),c.title+(notes?' — '+notes:''),certId);return json({ok:true});
   },['reviewer','admin']);
  }
  if(method==='GET'&&path==='/api/reports/summary')return withAuth(req,env,async u=>{
@@ -314,6 +336,146 @@ async function route(req,env,path){
   ]);
   return json({status:status.results,pending:aging.results,programs:programs.results,expiring:expiring.results,recent:recent.results,overdue_count:stale.total});
  },['reviewer','admin']);
+ // V5: My workflow tasks: reviewer/admin only, admin sees all, reviewers their assignments and unassigned tasks.
+ if(method==='GET'&&path==='/api/workflow/tasks')return withAuth(req,env,async u=>{
+  const query=`SELECT t.id,t.title,t.priority,t.status,t.due_at,t.created_at,t.assigned_to,t.certification_id,
+   c.title certification_title,student.full_name student_name,assignee.full_name assignee_name
+   FROM workflow_tasks t JOIN certifications c ON c.id=t.certification_id
+   JOIN users student ON student.id=c.student_id LEFT JOIN users assignee ON assignee.id=t.assigned_to
+   WHERE t.status='open' ${admin(u)?'':'AND (t.assigned_to=? OR t.assigned_to IS NULL)'} ORDER BY
+   CASE t.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,t.due_at LIMIT 100`;
+  const stmt=env.DB.prepare(query);return json({items:(await (admin(u)?stmt:stmt.bind(u.id)).all()).results});
+ },['reviewer','admin']);
+ if(method==='PATCH'&&/^\/api\/workflow\/tasks\/[^/]+$/.test(path))return withAuth(req,env,async u=>{
+  const id=segments[3],b=await parseJSON(req),action=clean(b.action,20);
+  const task=await env.DB.prepare('SELECT * FROM workflow_tasks WHERE id=?').bind(id).first();if(!task)return fail('Task not found',404);
+  if(!admin(u)&&task.assigned_to&&task.assigned_to!==u.id)return fail('Not your task',403);
+  if(action==='claim'){
+   const result=await env.DB.prepare("UPDATE workflow_tasks SET assigned_to=? WHERE id=? AND status='open' AND (assigned_to IS NULL OR assigned_to=?)").bind(u.id,id,u.id).run();
+   if(!result.meta.changes)return fail('Task already assigned or closed',409);
+  }else if(action==='complete'){
+   if(!admin(u)&&task.assigned_to!==u.id)return fail('Claim the task before closing',403);
+   await env.DB.prepare("UPDATE workflow_tasks SET status='completed',completed_at=? WHERE id=? AND status='open'").bind(now(),id).run();
+  }else return fail('Unsupported task action');
+  await audit(env,u.id,'task_'+action,id);return json({ok:true});
+ },['reviewer','admin']);
+ // V5: rule configuration; fixed safe events/actions instead of arbitrary code execution.
+ if(method==='GET'&&path==='/api/workflow/rules')return withAuth(req,env,async u=>json({items:(await env.DB.prepare('SELECT * FROM workflow_rules ORDER BY created_at DESC LIMIT 100').all()).results}),['admin']);
+ if(method==='POST'&&path==='/api/workflow/rules')return withAuth(req,env,async u=>{
+  const b=await parseJSON(req),event=clean(b.event,30),action=clean(b.action,20),priority=clean(b.priority,12),days=Number(b.days_due);
+  if(!['submitted','needs_revision'].includes(event)||!['task','notify'].includes(action)||!['high','normal','low'].includes(priority)||!Number.isInteger(days)||days<1||days>30)return fail('Invalid workflow rule');
+  const id=uuid();await env.DB.prepare('INSERT INTO workflow_rules (id,event,action,priority,days_due) VALUES (?,?,?,?,?)').bind(id,event,action,priority,days).run();
+  await audit(env,u.id,'workflow_rule_created',id);return json({id},201);
+ },['admin']);
+ if(method==='PATCH'&&/^\/api\/workflow\/rules\/[^/]+$/.test(path))return withAuth(req,env,async u=>{
+  const b=await parseJSON(req);if(typeof b.enabled!=='boolean')return fail('enabled must be boolean');
+  const id=segments[3],change=await env.DB.prepare('UPDATE workflow_rules SET enabled=? WHERE id=?').bind(b.enabled?1:0,id).run();
+  if(!change.meta.changes)return fail('Rule not found',404);await audit(env,u.id,'workflow_rule_updated',id,{enabled:b.enabled});return json({ok:true});
+ },['admin']);
+ // V5: session control; returns only metadata (never raw bearer secrets).
+ if(method==='GET'&&path==='/api/security/sessions')return withAuth(req,env,async u=>json({items:(await env.DB.prepare('SELECT created_at,expires_at,token_hash FROM sessions WHERE user_id=? ORDER BY created_at DESC LIMIT 30').bind(u.id).all()).results.map(r=>({created_at:r.created_at,expires_at:r.expires_at,current:r.token_hash===u.token_hash}))}));
+ if(method==='POST'&&path==='/api/security/revoke-others')return withAuth(req,env,async u=>{
+  await env.DB.prepare('DELETE FROM sessions WHERE user_id=? AND token_hash<>?').bind(u.id,u.token_hash).run();
+  await audit(env,u.id,'other_sessions_revoked',u.id);return json({ok:true});
+ });
+ // V5: administrator-triggered demo accounts. No existing user or non-demo record deletion.
+ // V5: One demo account per call: avoids multiple PBKDF2 hashes in a single Free Worker request.
+ if(method==='POST'&&path==='/api/demo/account')return withAuth(req,env,async u=>{
+  const b=await parseJSON(req),which=clean(b.which,20);
+  const specs={avery:['Avery Morgan','student','avery.demo@demo.example.test'],jordan:['Jordan Lee','student','jordan.demo@demo.example.test'],taylor:['Taylor Rivera','reviewer','taylor.demo@demo.example.test']};
+  if(!Object.hasOwn(specs,which))return fail('Choose avery, jordan or taylor');
+  const [name,role,email]=specs[which];
+  if(await env.DB.prepare('SELECT id FROM users WHERE email=?').bind(email).first())return fail('This demo account already exists. Temporary passwords are not recoverable.',409);
+  const pw='Demo-'+hex(crypto.getRandomValues(new Uint8Array(12)))+'z9',p=await hashPassword(pw),id=uuid();
+  await env.DB.prepare('INSERT INTO users(id,email,full_name,role,password_hash,password_salt,password_iterations,must_change_password) VALUES(?,?,?,?,?,?,?,1)').bind(id,email,name,role,p.hash,p.salt,p.iterations).run();
+  await audit(env,u.id,'demo_account_created',id,{role});
+  return json({account:{name,email,role,temporary_password:pw},warning:'Copy this password privately now; it cannot be retrieved and must be changed on first login.'},201);
+ },['admin']);
+ // V5: executive reporting scoped to authorized staff, with no unredacted student export.
+ if(method==='GET'&&path==='/api/executive')return withAuth(req,env,async u=>{
+  const [overview,aging,programs]=await Promise.all([
+   env.DB.prepare("SELECT COUNT(*) total, SUM(CASE WHEN status='approved' THEN 1 ELSE 0 END) approved, SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) pending FROM certifications").first(),
+   env.DB.prepare("SELECT COUNT(*) total FROM workflow_tasks WHERE status='open' AND due_at<datetime('now')").first(),
+   env.DB.prepare('SELECT COUNT(*) total FROM student_programs').first()
+  ]);
+  return json({total:overview.total,approved:overview.approved||0,pending:overview.pending||0,overdue_tasks:aging.total,enrollments:programs.total,disclaimer:'Demo metrics; approvals do not imply third-party issuer validation.'});
+ },['reviewer','admin']);
+ // V6: role-scoped global search. Search does not reveal records outside the caller's role.
+ if(method==='GET'&&path==='/api/search')return withAuth(req,env,async u=>{
+  const q=clean(new URL(req.url).searchParams.get('q'),80);
+  if(q.length<2)return json({certifications:[],students:[],catalog:[],programs:[]});
+  const like='%'+q.replace(/[\\%_]/g,m=>'\\'+m)+'%';
+  const certSQL="SELECT c.id,c.title,c.issuer,c.status,c.student_id,u.full_name student_name FROM certifications c JOIN users u ON u.id=c.student_id WHERE (c.title LIKE ? ESCAPE '\\' OR c.issuer LIKE ? ESCAPE '\\' OR c.credential_id LIKE ? ESCAPE '\\')"+(reviewer(u)?'':' AND c.student_id=?')+' ORDER BY c.created_at DESC LIMIT 20';
+  const certParams=reviewer(u)?[like,like,like]:[like,like,like,u.id];
+  const certs=(await env.DB.prepare(certSQL).bind(...certParams).all()).results;
+  const catalog=(await env.DB.prepare("SELECT id,title,issuer,category FROM catalog WHERE active=1 AND (title LIKE ? ESCAPE '\\' OR issuer LIKE ? ESCAPE '\\') LIMIT 20").bind(like,like).all()).results;
+  const programs=(await env.DB.prepare("SELECT id,title,department FROM programs WHERE active=1 AND title LIKE ? ESCAPE '\\' LIMIT 15").bind(like).all()).results;
+  const students=reviewer(u)?(await env.DB.prepare("SELECT id,full_name,email FROM users WHERE role='student' AND active=1 AND (full_name LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\') LIMIT 20").bind(like,like).all()).results:[];
+  return json({certifications:certs,students,catalog,programs});
+ });
+ // V6: staff student directory; no passwords, tokens, or authentication metadata.
+ if(method==='GET'&&path==='/api/students')return withAuth(req,env,async u=>{
+  const items=(await env.DB.prepare("SELECT id,full_name,email,active,created_at FROM users WHERE role='student' ORDER BY full_name LIMIT 300").all()).results;
+  return json({items});
+ },['reviewer','admin']);
+ // V6: Staff-only 360 profile; student cannot enumerate other students or retrieve private details.
+ if(method==='GET'&&/^\/api\/students\/[0-9a-f-]+\/360$/.test(path))return withAuth(req,env,async u=>{
+  const id=segments[2];
+  const student=await env.DB.prepare("SELECT id,full_name,email,active,created_at FROM users WHERE id=? AND role='student'").bind(id).first();
+  if(!student)return fail('Student not found',404);
+  const [certs,goals,pathways,events]=await Promise.all([
+    env.DB.prepare('SELECT id,title,issuer,status,earned_on,expires_on,created_at FROM certifications WHERE student_id=? ORDER BY created_at DESC LIMIT 100').bind(id).all(),
+    env.DB.prepare('SELECT id,title,status,target_date FROM student_goals WHERE student_id=? ORDER BY created_at DESC LIMIT 30').bind(id).all(),
+    env.DB.prepare('SELECT p.id,p.title,sp.joined_at FROM student_programs sp JOIN programs p ON p.id=sp.program_id WHERE sp.student_id=? LIMIT 30').bind(id).all(),
+    env.DB.prepare("SELECT a.event,a.occurred_at FROM audit_log a WHERE a.actor_id=? AND a.event IN ('certification_created','goal_created','goal_updated','password_changed') ORDER BY a.occurred_at DESC LIMIT 15").bind(id).all()
+  ]);
+  await audit(env,u.id,'student_profile_viewed',id);
+  return json({student,certifications:certs.results,goals:goals.results,programs:pathways.results,activity:events.results});
+ },['reviewer','admin']);
+ // V6: bounded filtered reporting with whitelisted dimensions; no raw PII in aggregate response.
+ if(method==='GET'&&path==='/api/reports/studio')return withAuth(req,env,async u=>{
+  const params=new URL(req.url).searchParams;
+  const dimension=clean(params.get('group'),20)||'status';
+  const status=clean(params.get('status'),30);
+  if(!['status','issuer','month','program'].includes(dimension))return fail('Invalid report dimension');
+  if(status&&!['pending','approved','rejected','needs_revision'].includes(status))return fail('Invalid status filter');
+  let query,bind=[];
+  if(dimension==='program'){
+    query=`SELECT p.title label,COUNT(DISTINCT c.id) total FROM programs p LEFT JOIN student_programs sp ON sp.program_id=p.id LEFT JOIN certifications c ON c.student_id=sp.student_id ${status?'AND c.status=?':''} GROUP BY p.id ORDER BY total DESC LIMIT 30`;
+    if(status)bind=[status];
+  }else{
+    const expr={status:'c.status',issuer:'c.issuer',month:'substr(c.created_at,1,7)'}[dimension];
+    query=`SELECT ${expr} label,COUNT(*) total FROM certifications c ${status?'WHERE c.status=?':''} GROUP BY ${expr} ORDER BY total DESC LIMIT 40`;
+    if(status)bind=[status];
+  }
+  const rows=(await env.DB.prepare(query).bind(...bind).all()).results;
+  return json({group:dimension,status:status||'all',rows,disclaimer:dimension==='program'?'Program membership counts can overlap; each student may belong to multiple programs.':'Aggregate demonstration records only.'});
+ },['reviewer','admin']);
+ // V6: staff security dashboard. Does not reveal raw tokens, password hashes or IP data.
+ if(method==='GET'&&path==='/api/security/center')return withAuth(req,env,async u=>{
+  const [accounts,sessions,failed,events]=await Promise.all([
+   env.DB.prepare('SELECT role,active,COUNT(*) total FROM users GROUP BY role,active').all(),
+   env.DB.prepare("SELECT COUNT(*) total FROM sessions WHERE expires_at>?").bind(now()).first(),
+   env.DB.prepare('SELECT COUNT(*) total FROM login_attempts WHERE count>=5').first(),
+   env.DB.prepare("SELECT a.event,a.occurred_at,u.full_name actor FROM audit_log a LEFT JOIN users u ON u.id=a.actor_id WHERE a.event IN ('login','password_changed','user_status_changed','other_sessions_revoked','bootstrap_admin','demo_account_created') ORDER BY a.occurred_at DESC LIMIT 35").all()
+  ]);
+  return json({accounts:accounts.results,active_sessions:sessions.total,high_attempt_keys:failed.total,events:events.results,disclaimer:'Prototype security overview. Not a SIEM, intrusion detection system, or institutional security audit.'});
+ },['admin']);
+ // V6: seed only recognized fictional demo users; idempotent and labeled, never deletes existing data.
+ if(method==='POST'&&path==='/api/demo/scenario')return withAuth(req,env,async u=>{
+  const b=await parseJSON(req),which=clean(b.which,20);
+  const allowed={avery:'avery.demo@demo.example.test',jordan:'jordan.demo@demo.example.test'};
+  if(!Object.hasOwn(allowed,which))return fail('Choose avery or jordan');
+  const student=await env.DB.prepare("SELECT id FROM users WHERE email=? AND role='student' AND active=1").bind(allowed[which]).first();
+  if(!student)return fail('Create this fictional student account first',404);
+  const id='v6-demo-cert-'+which;
+  const title=which==='avery'?'CompTIA Network+ (Demo)':'Cisco CCNA (Demo)';
+  const status=which==='avery'?'pending':'needs_revision';
+  const result=await env.DB.prepare(`INSERT OR IGNORE INTO certifications (id,student_id,title,issuer,credential_id,earned_on,status,proof_key,proof_name,proof_type,notes)
+   VALUES(?,?,?,?,?,?,?,?,?,?,?)`).bind(id,student.id,title,which==='avery'?'CompTIA':'Cisco','DEMO-ONLY-'+which,'2026-09-15',status,'demo:fictional','Fictional credential details only','demo-text','SYNTHETIC DATA — NOT A REAL CERTIFICATE').run();
+  if(result.meta.changes){await audit(env,u.id,'demo_scenario_created',id,{synthetic:true});if(status==='pending')await applyWorkflow(env,id,'submitted',u.id);}
+  return json({created:!!result.meta.changes,certification_id:id,message:result.meta.changes?'Fictional scenario created.':'Scenario already exists; no records overwritten.'});
+ },['admin']);
  if(method==='GET'&&path==='/api/audit')return withAuth(req,env,async u=>json({items:(await env.DB.prepare('SELECT a.*,u.full_name AS actor_name FROM audit_log a LEFT JOIN users u ON u.id=a.actor_id ORDER BY a.occurred_at DESC LIMIT 100').all()).results}),['admin']);
  return fail('Not found',404);
 }

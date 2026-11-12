@@ -26,3 +26,55 @@ body{background:radial-gradient(circle at 85% -10%,#e4edf9 0,transparent 38%),#f
 .step-no{font-size:28px;font-weight:900;color:#d0a254;letter-spacing:-1px}
 @media(max-width:850px){.split-panels,.check-grid,.verify-fields{grid-template-columns:1fr}}
 @media print{body{background:white!important}.sidebar,.topbar,.no-print,#toast{display:none!important}.shell,.main{display:block!important}.content{max-width:none;padding:0!important}.print-portfolio{box-shadow:none;border:0;padding:0}.print-portfolio .panel{margin-top:20px}.portfolio-masthead{padding-top:0}.card{break-inside:avoid}}
+
+/* V5 Salesforce-inspired enterprise experience. Original branding, not Salesforce assets. */
+:root{--brand:#1464b3;--navy:#12365a;--line:#dde5ef;--bg:#f4f7fb;--radius:10px}
+body{background:#f5f7fa;color:#19304a;font-size:14px}
+.experience .sidebar{width:248px;background:#f9fbfe;color:#23415e;border-right:1px solid #dce5ef;box-shadow:none;padding:14px 10px}
+.experience .sidebar .brand{font-size:15px;color:#123a63;padding:10px 6px 22px}
+.experience .sidebar .brand small{color:#67829a}
+.experience .brand-icon{border-radius:7px;background:#0b63b6;color:white;padding:10px;box-shadow:none}
+.experience .nav button{color:#35566f;padding:10px 12px;font-size:13px;border-radius:6px;font-weight:600;transition:background .12s;width:100%}
+.experience .nav button:hover{background:#e9f3ff;transform:none}
+.experience .nav button.active{color:#075ba2;background:#e3f1ff;border-left:3px solid #0f68b9}
+.nav-caption{font-size:10px;letter-spacing:1.3px;font-weight:800;color:#7892a7;padding:14px 13px 9px}
+.app-switcher{background:#eaf3fc;border:1px solid #d4e5f5;border-radius:7px;padding:12px;font-weight:700;color:#234d78;font-size:12px;display:flex;justify-content:space-between}
+.experience .sidebar .foot{color:#7990a4;border-color:#e1e8ef}
+.experience .main{background:#f5f7fa}
+.experience .topbar{height:58px;min-height:58px;padding:8px 22px;border-bottom:1px solid #d8e2ec;box-shadow:none;position:sticky;top:0;z-index:4;background:#fff}
+.topbar-brand{display:flex;align-items:center;gap:10px;font-size:13px;color:#63778b}.topbar-brand strong{font-size:20px;letter-spacing:-.8px;color:#115e9c}.topbar-actions{display:flex;align-items:center;gap:8px}
+.environment-pill{font-size:10px;color:#856122;background:#fff2d9;border-radius:3px;padding:4px 7px;font-weight:800}
+.top-icon{border:1px solid #d9e4ef;background:#fff;border-radius:6px;padding:8px 11px;color:#45627b;font-size:12px;font-weight:600}
+.record-tabs{background:#fff;display:flex;gap:2px;overflow-x:auto;border-bottom:1px solid #dce5ee;padding:0 20px;position:sticky;top:58px;z-index:3}
+.record-tabs button{border:0;border-bottom:3px solid transparent;background:none;color:#48637b;white-space:nowrap;padding:14px 13px 11px;font-weight:650;font-size:12px}
+.record-tabs button.selected{border-bottom-color:#1372be;color:#0a5c9e}
+.experience .content{max-width:1550px;padding:18px 26px 48px}
+.breadcrumb{font-size:11px;color:#7590a6;margin-bottom:20px}.breadcrumb span{padding:0 8px}
+.experience .card{border:1px solid #dfe6ed;border-radius:8px;box-shadow:0 1px 3px #1830480e;transition:none}
+.experience .card:hover{box-shadow:0 1px 3px #1830480e}
+.experience .button{border-radius:5px;background:#1475bb;font-weight:700}.experience .button.secondary{background:#f1f7fe;border:1px solid #bfd8ee;color:#125b98}.experience .button.light{background:#fff;border-color:#bed0de}
+.experience .stat strong{color:#183d63}.experience .stat .dot{background:#1c86c4}
+.experience th{background:#f7f9fb;color:#526c84}.experience td,.experience th{padding:12px 10px}
+.experience input,.experience select,.experience textarea{border-radius:5px}.action-row{display:flex;gap:6px;flex-wrap:wrap}
+.experience .subheading h1{font-size:26px;color:#163957}.experience .eyebrow{color:#5d829f}.giant-number{font-size:52px;font-weight:800;color:#1768a9;line-height:1.1;margin:20px 0}
+.experience .status.high{background:#ffe7e7;color:#b63445}.experience .status.normal{background:#e9f3ff;color:#276eae}.experience .status.low{background:#e8f6e9;color:#31774b}
+@media(max-width:900px){.experience .sidebar{width:200px}.topbar-brand span:not(.environment-pill){display:none}.experience .content{padding:17px}}
+@media(max-width:630px){.experience .sidebar{width:100%}.experience .topbar{position:static}.record-tabs{top:0}.topbar-actions .userpill{display:none}.experience .content{padding:14px}.record-tabs{padding:0 7px}}
+
+/* V6 — consistent enterprise record experiences */
+.experience .button{min-height:36px;display:inline-flex;align-items:center;justify-content:center;gap:5px}
+.experience .button:focus-visible,.experience .top-icon:focus-visible,.experience .nav button:focus-visible,.search-row:focus-visible{outline:3px solid #f8b84b;outline-offset:2px}
+.experience .nav button:active,.experience .record-tabs button:active{opacity:.78}
+.experience .tablewrap{overflow-x:auto}
+.experience .card h2{font-size:16px;color:#173b5e}
+.experience .card{overflow-wrap:anywhere}
+.search-results{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px;margin-top:18px}
+.search-section{border:1px solid #dbe5ee;border-radius:9px;padding:16px;background:#fff}
+.search-section h3{margin:0 0 14px;font-size:14px;color:#244e75}
+.search-section h3 small{color:#6d8599}
+.search-row{width:100%;border:0;border-top:1px solid #e8eef4;background:transparent;text-align:left;padding:12px 6px;cursor:pointer;display:flex;justify-content:space-between;color:#1c4c78;gap:8px}
+.search-row:hover{background:#f0f7ff}
+.report-line{display:grid;grid-template-columns:minmax(110px,1fr) 2fr 60px;align-items:center;gap:14px;border-top:1px solid #e8edf3;padding:13px 0;font-size:13px}
+.report-line strong{text-align:right}.report-meter{height:11px;background:#e8eef5;border-radius:30px;overflow:hidden}.report-meter div{height:100%;background:linear-gradient(90deg,#1672c3,#50a7df);border-radius:30px}
+.experience .top-icon:hover{background:#edf6fe;color:#0c5c9d}
+@media(max-width:650px){.report-line{grid-template-columns:85px 1fr 32px}.experience .subheading{flex-wrap:wrap}.search-results{grid-template-columns:1fr}}

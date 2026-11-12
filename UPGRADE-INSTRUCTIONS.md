@@ -1,65 +1,34 @@
-# Ultimate FREE v4 — Upgrade the existing certification tracker
+# Upgrade v5 → v6 without recreating accounts
 
-This is a **fictional-data demo** developed by Elevate Systems Consulting. It is not a certified PGCC production system. The v4 upgrade preserves your **existing D1 database, Cloudflare Worker URL, GitHub repository, authentication accounts and passwords, `wrangler.toml`, and `frontend/config.js`**.
+**Requires a working v5 installation.** Your last confirmed existing project folder was `~/Downloads/pgcc-certification-tracker`. This ZIP has safe placeholder configuration and MUST be installed into the existing configured repository, not deployed as an independent project.
 
-## What you get
+1. Download and extract this ZIP into Downloads (folder `PGCC-Certification-Tracker-ENTERPRISE-POLISH-v6`).
+2. In Mac Terminal:
+   ```bash
+   cd "$HOME/Downloads/PGCC-Certification-Tracker-ENTERPRISE-POLISH-v6"
+   bash install-upgrade.sh "$HOME/Downloads/pgcc-certification-tracker"
+   ```
+3. The install script checks for v5, backs up your local source under `.local-backups/`, preserves `wrangler.toml`, `frontend/config.js`, `.git`, previous migrations, and tests the new code. **It does not touch your live database.**
+4. Then **only after the install script succeeds**, run:
+   ```bash
+   bash deploy-upgrade.sh "$HOME/Downloads/pgcc-certification-tracker"
+   ```
+5. The deploy script first runs syntax and integration tests, exports the live D1 database to `~/Desktop/pgcc-cloudflare-backups/`, checks backup existence, and asks for explicit `DEPLOY`. It then runs migration, deploys the existing Worker, and pushes the frontend to the existing GitHub repository.
+6. Confirm GitHub Actions shows a green check, then sign in at `https://blaketherank.github.io/pgcc-certification-tracker/` with your **existing** administrator account. You may need to sign in again if your browser session expires.
 
-- All previous features: secure role-based login, student submissions, manual approval/rejection/revisions, notifications, searchable credential registry, catalog, learning goals, announcements, historical activity, audit log, reporting, CSV exports, analytics, expiration monitoring, and user administration.
-- **Program Pathways:** administrators create pathways and map catalog certifications to each; students join pathways and see indicative requirement coverage based on approved credential title/issuer matches.
-- **Verification Desk:** staff can save checklists covering issuer, ID/link, dates, and fictional demo evidence, with reviewer notes and audit events. This **does not** call external verification services.
-- **Operations Command Center:** reviewer backlog and aging, credentials approaching expiry, program enrollments, and recent logged events.
-- **Portfolio:** students can print/save an *unofficial* portfolio with approved records and personal goals.
-- **Role-tailored Demo Guide**, enhanced responsive layout and accessibility styling.
+## Functional verification
 
-## Your Mac setup (minimal commands)
+- Login as administrator. Open Global Search, Student 360, Reporting Studio, Security Center and Demo Lab.
+- Create the fictional demo accounts with Demo Lab if not created previously; securely retain passwords shown once. Never send them in chat or add them to Git.
+- In Demo Lab click **Add Fictional Sample Records** after provisioning the demo student accounts. This calls the administrator-only demo scenario endpoint, is idempotent, and does not delete or overwrite existing records.
+- Open Report Studio and export aggregated CSV; do not treat aggregate demo metrics as real college outcomes.
+- Verify that student accounts cannot access Student 360, Reporting Studio, or Security Center; reviewers can access Student 360 and reports but not Security Center.
+- Confirm legacy submission/approval flows and notifications continue working.
 
-**Step 1: Extract ZIP into Downloads.** Open Terminal in the extracted package directory (the directory containing `install-upgrade.sh`). Example:
+## If the upgrade fails
 
-```bash
-cd "$HOME/Downloads/PGCC-Certification-Tracker-ULTIMATE-FREE-v4"
-```
+Stop on any error. The installer keeps a local source backup, and the deploy script exports a D1 backup before migration. Do not delete the live D1 database, call `/api/setup`, or attempt to regenerate the administrator account. If migration or Worker deployment fails, inspect output before re-running; backups alone are not automatic rollback.
 
-If the extracted folder has a different name, drag the folder from Finder into Terminal after typing `cd `.
+## Limitations
 
-**Step 2: Install into your existing working project.** The previously established path was `~/Downloads/pgcc-certification-tracker`:
-
-```bash
-bash install-upgrade.sh "$HOME/Downloads/pgcc-certification-tracker"
-```
-
-The installer makes a local code backup. It does not recreate accounts or change Cloudflare configuration.
-
-**Step 3: Export D1, then migrate/deploy/push with confirmation.**
-
-```bash
-bash deploy-upgrade.sh "$HOME/Downloads/pgcc-certification-tracker"
-```
-
-The script exports the **live** D1 database to `~/Desktop/pgcc-cloudflare-backups/`, verifies the backup file exists and is nonempty, then asks you to type `DEPLOY`. Only then does it run `npm run db:remote`, `npm run deploy:api`, commit the updated source files, and `git push origin main`. **Stop if any command fails**. Do not run `/api/setup` again or create a new D1 database.
-
-**Step 4: Verify.** After GitHub Actions succeeds, open `https://blaketherank.github.io/pgcc-certification-tracker/` and hard refresh. Log in with your existing administrator account.
-
-## Suggested demo sequence
-
-1. Admin adds a certification to the Catalog, creates a Program Pathway and maps that certification to the program.
-2. Admin creates fictional student/reviewer users and a role-targeted announcement.
-3. Student joins a pathway, sets a learning goal, submits fictional certification information and adds a demo evidence *description*.
-4. Reviewer sees the record in the Review Queue, saves the manual verification checklist, then approves or requests revisions in the Certification Registry.
-5. Student views in-app notification, updated pathway coverage, and an unofficial printable portfolio.
-6. Admin visits Operations and Analytics to show backlog, risk, trends, audit log and CSV reports.
-7. Verify student accounts cannot see other student records, checklists, or admin dashboards.
-
-## Safety, privacy and limitations
-
-- No real certificate file upload/storage. Do not enter actual student records or institutional secrets.
-- Pathway progress is a **demonstration heuristic** matching *approved* certificate title + issuer to catalog entries; it is not official credit articulation, program completion or third-party certification verification.
-- Reviewer checklist is an attestation written into D1; it does not automatically authenticate credentials.
-- This upgrade uses **free tier** GitHub Pages + Cloudflare Worker/D1 without adding R2, billing or subscription dependencies. Stay within free limits; available quotas and terms may change.
-- Existing Worker authentication remains intact; PBKDF2 100,000 iterations is a known Cloudflare compatibility workaround, not evidence of security-audit readiness.
-- Code syntax and SQLite migration checks pass; **live Cloudflare integration and comprehensive security tests have not been performed**.
-
-## Rollback
-
-- Installer backup: `YOUR_PROJECT/.local-backups/pre-v4-TIMESTAMP` (ignored from Git).
-- D1 export backup: `~/Desktop/pgcc-cloudflare-backups/pgcc-d1-pre-v4-TIMESTAMP.sql`.
-- To roll back UI/API, restore `worker/index.js`, `frontend/app.js`, `frontend/styles.css`, and `frontend/index.html` from the local backup, redeploy Worker, commit and push. Additive v4 tables may safely remain unused. Do **not** blindly import an old D1 backup over new live data.
+The v6 code passes offline unit/integration testing but has **not** been deployed to your Cloudflare account in this environment. Cloudflare free-tier CPU and query quotas still apply. Password hashing stays at the supported 100,000 PBKDF2 iterations; this is a prototype compatibility compromise, not a claim of production-grade credential storage. Secure cookies, MFA, password resets, complete record-level authorization analysis, and professional vulnerability testing remain future work.

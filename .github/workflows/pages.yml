@@ -1,9 +1,12 @@
-name: Publish frontend to GitHub Pages
+name: Validate and publish frontend to GitHub Pages
 on:
   push:
     branches: [main]
     paths:
       - 'frontend/**'
+      - 'worker/**'
+      - 'migrations/**'
+      - 'tests/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 permissions:
@@ -14,7 +17,17 @@ concurrency:
   group: pages
   cancel-in-progress: true
 jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm run check
+      - run: npm test
   deploy:
+    needs: tests
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
