@@ -222,6 +222,98 @@ async function route(req,env,path){
   const events=(await env.DB.prepare("SELECT a.event,a.occurred_at,u.full_name AS actor_name FROM audit_log a LEFT JOIN users u ON u.id=a.actor_id WHERE a.target_id=? AND a.event LIKE 'certification_%' ORDER BY a.occurred_at DESC LIMIT 50").bind(certId).all()).results;
   return json({items:events});
  });
+ // V4: program pathways. Catalog IDs are matched exactly against approved titles and issuers
+ // for a demonstrative coverage estimate; administrators must confirm equivalencies.
+ if(method==='GET' && path==='/api/programs') return withAuth(req,env,async u=>{
+  const programs=(await env.DB.prepare('SELECT id,title,department,description FROM programs WHERE active=1 ORDER BY title LIMIT 80').all()).results;
+  const requirements=(await env.DB.prepare(`SELECT pr.id,pr.program_id,pr.catalog_id,pr.required,c.title,c.issuer,c.category,c.level
+   FROM program_requirements pr JOIN catalog c ON c.id=pr.catalog_id WHERE c.active=1 ORDER BY c.title LIMIT 500`).all()).results;
+  const enrolled=u.role==='student'?(await env.DB.prepare('SELECT program_id FROM student_programs WHERE student_id=?').bind(u.id).all()).results.map(x=>x.program_id):[];
+  let coverage=[];
+  if(u.role==='student')coverage=(await env.DB.prepare(`SELECT pr.program_id,pr.catalog_id,COUNT(cert.id) AS approved_count
+   FROM program_requirements pr JOIN catalog c ON c.id=pr.catalog_id
+   LEFT JOIN certifications cert ON cert.student_id=? AND cert.status='approved'
+    AND lower(trim(cert.title))=lower(trim(c.title)) AND lower(trim(cert.issuer))=lower(trim(c.issuer))
+   GROUP BY pr.program_id,pr.catalog_id`).bind(u.id).all()).results;
+  return json({programs,requirements,enrolled,coverage,disclaimer:'Coverage is an automated title/issuer match for demonstration, not official degree or certification equivalency.'});
+ });
+ if(method==='POST' && path==='/api/programs') return withAuth(req,env,async u=>{
+  const b=await parseJSON(req),title=clean(b.title,140),department=clean(b.department,90)||'Technology',description=clean(b.description,700);
+  if(title.length<3)return fail('A program title of at least 3 characters is required');
+  const id=uuid();await env.DB.prepare('INSERT INTO programs(id,title,department,description) VALUES (?,?,?,?)').bind(id,title,department,description).run();
+  await audit(env,u.id,'program_created',id);return json({id},201);
+ },['admin']);
+ if(method==='POST' && /^\/api\/programs\/[^/]+\/requirements$/.test(path))return withAuth(req,env,async u=>{
+  const programId=segments[2],b=await parseJSON(req),catalogId=clean(b.catalog_id,90);
+  const program=await env.DB.prepare('SELECT id FROM programs WHERE id=? AND active=1').bind(programId).first();
+  const catalog=await env.DB.prepare('SELECT id FROM catalog WHERE id=? AND active=1').bind(catalogId).first();
+  if(!program||!catalog)return fail('Program or catalog entry not found',404);
+  const prior=await env.DB.prepare('SELECT id FROM program_requirements WHERE program_id=? AND catalog_id=?').bind(programId,catalogId).first();
+  if(prior)return fail('Credential already mapped to this program',409);
+  const id=uuid();await env.DB.prepare('INSERT INTO program_requirements(id,program_id,catalog_id) VALUES (?,?,?)').bind(id,programId,catalogId).run();
+  await audit(env,u.id,'program_requirement_added',programId,{catalog_id:catalogId});return json({id},201);
+ },['admin']);
+ if(method==='DELETE' && /^\/api\/programs\/[^/]+\/requirements\/[^/]+$/.test(path))return withAuth(req,env,async u=>{
+  const programId=segments[2],requirementId=segments[4];
+  const result=await env.DB.prepare('DELETE FROM program_requirements WHERE id=? AND program_id=?').bind(requirementId,programId).run();
+  if(!result.meta.changes)return fail('Requirement not found',404);
+  await audit(env,u.id,'program_requirement_removed',programId,{requirement_id:requirementId});return json({ok:true});
+ },['admin']);
+ if(method==='POST' && /^\/api\/programs\/[^/]+\/enroll$/.test(path))return withAuth(req,env,async u=>{
+  const programId=segments[2];const exists=await env.DB.prepare('SELECT id FROM programs WHERE id=? AND active=1').bind(programId).first();
+  if(!exists)return fail('Program not found',404);
+  await env.DB.prepare('INSERT OR IGNORE INTO student_programs(student_id,program_id) VALUES (?,?)').bind(u.id,programId).run();
+  await audit(env,u.id,'program_enrolled',programId);return json({ok:true});
+ },['student']);
+ if(method==='DELETE' && /^\/api\/programs\/[^/]+\/enroll$/.test(path))return withAuth(req,env,async u=>{
+  const programId=segments[2];await env.DB.prepare('DELETE FROM student_programs WHERE student_id=? AND program_id=?').bind(u.id,programId).run();
+  await audit(env,u.id,'program_unenrolled',programId);return json({ok:true});
+ },['student']);
+ // V4: reviewer worksheet. These flags are manually attested, NOT third-party verification.
+ if(method==='GET' && /^\/api\/verification\/[^/]+$/.test(path))return withAuth(req,env,async u=>{
+  const certId=segments[2];const cert=await env.DB.prepare(`SELECT c.id,c.title,c.issuer,c.credential_id,c.verification_url,c.earned_on,c.expires_on,c.status,c.proof_name,
+   s.full_name AS student_name FROM certifications c JOIN users s ON s.id=c.student_id WHERE c.id=?`).bind(certId).first();
+  if(!cert)return fail('Credential not found',404);
+  const check=await env.DB.prepare('SELECT issuer_checked,identifier_checked,dates_checked,evidence_reviewed,reviewer_notes,checked_at FROM verification_checks WHERE certification_id=?').bind(certId).first();
+  return json({cert,check:check||{issuer_checked:0,identifier_checked:0,dates_checked:0,evidence_reviewed:0,reviewer_notes:'',checked_at:null},notice:'Reviewer-recorded checks only; no external issuer or evidence validation occurs automatically.'});
+ },['reviewer','admin']);
+ if(method==='PUT' && /^\/api\/verification\/[^/]+$/.test(path))return withAuth(req,env,async u=>{
+  const certId=segments[2],b=await parseJSON(req);
+  const cert=await env.DB.prepare('SELECT id,status FROM certifications WHERE id=?').bind(certId).first();
+  if(!cert)return fail('Credential not found',404);
+  if(cert.status!=='pending')return fail('Only pending submissions have editable review checklists',409);
+  const flags=['issuer_checked','identifier_checked','dates_checked','evidence_reviewed'];
+  if(flags.some(k=>typeof b[k]!=='boolean'))return fail('Each checklist flag must be true or false');
+  const notes=clean(b.reviewer_notes,1200);
+  await env.DB.prepare(`INSERT INTO verification_checks(certification_id,issuer_checked,identifier_checked,dates_checked,evidence_reviewed,reviewer_notes,checked_by,checked_at)
+   VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(certification_id) DO UPDATE SET
+   issuer_checked=excluded.issuer_checked,identifier_checked=excluded.identifier_checked,
+   dates_checked=excluded.dates_checked,evidence_reviewed=excluded.evidence_reviewed,
+   reviewer_notes=excluded.reviewer_notes,checked_by=excluded.checked_by,checked_at=excluded.checked_at`)
+   .bind(certId,...flags.map(k=>b[k]?1:0),notes,u.id,now()).run();
+  await audit(env,u.id,'review_checklist_saved',certId,{completed:flags.filter(k=>b[k]).length});return json({ok:true});
+ },['reviewer','admin']);
+ // V4: Operational risk and oversight metrics, all aggregates are bounded and server-side.
+ if(method==='GET' && path==='/api/operations')return withAuth(req,env,async u=>{
+  const [status,aging,programs,expiring,recent,stale]=await Promise.all([
+   env.DB.prepare('SELECT status,COUNT(*) AS total FROM certifications GROUP BY status').all(),
+   env.DB.prepare(`SELECT c.id,c.title,c.issuer,c.created_at,s.full_name student_name,
+    CAST(julianday('now')-julianday(c.created_at) AS INTEGER) AS days_waiting
+    FROM certifications c JOIN users s ON s.id=c.student_id WHERE c.status='pending'
+    ORDER BY c.created_at ASC LIMIT 80`).all(),
+   env.DB.prepare(`SELECT p.id,p.title,COUNT(DISTINCT sp.student_id) AS students,COUNT(DISTINCT pr.id) AS requirements
+    FROM programs p LEFT JOIN student_programs sp ON sp.program_id=p.id
+    LEFT JOIN program_requirements pr ON pr.program_id=p.id
+    WHERE p.active=1 GROUP BY p.id ORDER BY p.title LIMIT 80`).all(),
+   env.DB.prepare(`SELECT c.title,c.expires_on,s.full_name student_name FROM certifications c
+    JOIN users s ON s.id=c.student_id WHERE c.status='approved' AND c.expires_on IS NOT NULL
+    AND c.expires_on<=date('now','+90 days') ORDER BY c.expires_on LIMIT 80`).all(),
+   env.DB.prepare(`SELECT a.event,a.occurred_at,usr.full_name actor_name FROM audit_log a
+    LEFT JOIN users usr ON usr.id=a.actor_id ORDER BY a.occurred_at DESC LIMIT 20`).all(),
+   env.DB.prepare(`SELECT COUNT(*) AS total FROM certifications WHERE status='pending' AND created_at<datetime('now','-7 days')`).first()
+  ]);
+  return json({status:status.results,pending:aging.results,programs:programs.results,expiring:expiring.results,recent:recent.results,overdue_count:stale.total});
+ },['reviewer','admin']);
  if(method==='GET'&&path==='/api/audit')return withAuth(req,env,async u=>json({items:(await env.DB.prepare('SELECT a.*,u.full_name AS actor_name FROM audit_log a LEFT JOIN users u ON u.id=a.actor_id ORDER BY a.occurred_at DESC LIMIT 100').all()).results}),['admin']);
  return fail('Not found',404);
 }

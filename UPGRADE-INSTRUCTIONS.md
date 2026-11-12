@@ -1,62 +1,65 @@
-# Enterprise Free v3 — Upgrade your existing deployment
+# Ultimate FREE v4 — Upgrade the existing certification tracker
 
-**For Elevate Systems Consulting's fictional-data PGCC Certification Tracker demonstration.** This adds functionality to the existing working site. It does not require a paid service, new database or new administrator account. Free service limits apply; real protected records must not be entered.
+This is a **fictional-data demo** developed by Elevate Systems Consulting. It is not a certified PGCC production system. The v4 upgrade preserves your **existing D1 database, Cloudflare Worker URL, GitHub repository, authentication accounts and passwords, `wrangler.toml`, and `frontend/config.js`**.
 
-## Features
+## What you get
 
-Previous v1/v2 features stay: student/administrator/reviewer roles, login, credential submissions, fictional evidence descriptions, approval/rejection/revision flow, searchable registry, reporting, CSV export, audit logs, notification inbox, reviewer queue, expiry watchlist and analytics.
+- All previous features: secure role-based login, student submissions, manual approval/rejection/revisions, notifications, searchable credential registry, catalog, learning goals, announcements, historical activity, audit log, reporting, CSV exports, analytics, expiration monitoring, and user administration.
+- **Program Pathways:** administrators create pathways and map catalog certifications to each; students join pathways and see indicative requirement coverage based on approved credential title/issuer matches.
+- **Verification Desk:** staff can save checklists covering issuer, ID/link, dates, and fictional demo evidence, with reviewer notes and audit events. This **does not** call external verification services.
+- **Operations Command Center:** reviewer backlog and aging, credentials approaching expiry, program enrollments, and recent logged events.
+- **Portfolio:** students can print/save an *unofficial* portfolio with approved records and personal goals.
+- **Role-tailored Demo Guide**, enhanced responsive layout and accessibility styling.
 
-V3 adds:
-- **Certification Catalog:** six seeded sample credentials and expandable admin-maintained catalog; category/level/search filtering.
-- **Student Development Plans:** milestones, target dates and progress statuses; catalog-to-goal action; goals are private to each student.
-- **Role-targeted Announcements:** administrators can publish or archive notices; students/reviewers see applicable notices.
-- **Certification History:** ownership-checked activity timeline from audit events.
-- **Polished enterprise interface:** responsive catalog cards, learning-plan progress cards, announcement feed, activity timelines.
+## Your Mac setup (minimal commands)
 
-Catalog content is illustrative; it is not a guarantee of current certification requirements or an official PGCC offering. Notifications are in-app only; the free edition does not upload or store proof documents.
-
-## Safest upgrade (Mac Terminal)
-
-1. **Back up your live Cloudflare D1 database** using Cloudflare's dashboard or Wrangler. Check that the export exists. Do not skip this because migrations change the live database.
-2. Download and extract this ZIP into Downloads or Desktop.
-3. Open Terminal, change to the **extracted v3 folder** (the one containing `install-upgrade.sh`), and run:
+**Step 1: Extract ZIP into Downloads.** Open Terminal in the extracted package directory (the directory containing `install-upgrade.sh`). Example:
 
 ```bash
-bash install-upgrade.sh "$HOME/Desktop/pgcc-certification-tracker"
+cd "$HOME/Downloads/PGCC-Certification-Tracker-ULTIMATE-FREE-v4"
 ```
 
-The script copies updated code into your existing project, creates a timestamped local source backup, and does **not** replace your working `wrangler.toml`, `frontend/config.js`, database ID, domain or GitHub settings.
+If the extracted folder has a different name, drag the folder from Finder into Terminal after typing `cd `.
 
-4. In Terminal run:
+**Step 2: Install into your existing working project.** The previously established path was `~/Downloads/pgcc-certification-tracker`:
 
 ```bash
-cd "$HOME/Desktop/pgcc-certification-tracker"
-npm run db:remote
-npm run deploy:api
-git add worker/index.js frontend/app.js frontend/styles.css migrations/0002_advanced.sql migrations/0003_enterprise.sql UPGRADE-INSTRUCTIONS.md
-git commit -m "Advanced free v3 upgrade"
-git push origin main
+bash install-upgrade.sh "$HOME/Downloads/pgcc-certification-tracker"
 ```
 
-If a command fails, **stop** and review the message rather than advancing to the next command. The database operation applies pending 0002 and 0003 migrations (or only 0003 if v2 is already installed). **Never** recreate D1 or run `/api/setup` again.
+The installer makes a local code backup. It does not recreate accounts or change Cloudflare configuration.
 
-5. Check GitHub Actions. When deployment finishes, hard-refresh the existing GitHub Pages URL. Sign in with your existing account.
+**Step 3: Export D1, then migrate/deploy/push with confirmation.**
 
-## Verification / demo walkthrough
+```bash
+bash deploy-upgrade.sh "$HOME/Downloads/pgcc-certification-tracker"
+```
 
-1. Administrator: open Certification Catalog; add an entry; post an announcement for students.
-2. Administrator: create a **fictional** student and reviewer account (strong temporary password, private handoff).
-3. Student: see the announcement; open Certification Catalog; choose “Plan this certification”; open My Development Plan; set a milestone status.
-4. Student: submit a fictional certificate and record a **description**, not a file.
-5. Reviewer: use Review Queue; approve or request revision; open registry certification History to see activity.
-6. Student: open Inbox to view the decision and mark it read.
-7. Administrator: inspect Analytics, Reports, certification expiry watchlist and Audit Log.
-8. Confirm a student cannot read another student's records/goals and cannot use admin APIs.
+The script exports the **live** D1 database to `~/Desktop/pgcc-cloudflare-backups/`, verifies the backup file exists and is nonempty, then asks you to type `DEPLOY`. Only then does it run `npm run db:remote`, `npm run deploy:api`, commit the updated source files, and `git push origin main`. **Stop if any command fails**. Do not run `/api/setup` again or create a new D1 database.
 
-## Rollback and important caveats
+**Step 4: Verify.** After GitHub Actions succeeds, open `https://blaketherank.github.io/pgcc-certification-tracker/` and hard refresh. Log in with your existing administrator account.
 
-- The upgrade script makes a timestamped local backup of the previous frontend/worker code. To roll back UI and Worker, restore those files from the backup, redeploy the Worker and push the frontend. **Do not remove the new database tables** just to roll back code; additive tables can remain harmlessly.
-- Do not overwrite `wrangler.toml`, `frontend/config.js`, or use the included placeholder configuration file to deploy.
-- `npm run check` covers JavaScript syntax, not every functional/security workflow. Live Cloudflare integration was not tested here. Password hashing is compatible with the previously observed Cloudflare PBKDF2 ceiling but is not independently audited.
-- GitHub Pages site files are public; backend secrets must remain in Wrangler secrets. Free Workers/D1 limits may affect availability.
-- This is a production-style **demo**, not production-approved for real student records, FERPA compliance or actual proof-file verification.
+## Suggested demo sequence
+
+1. Admin adds a certification to the Catalog, creates a Program Pathway and maps that certification to the program.
+2. Admin creates fictional student/reviewer users and a role-targeted announcement.
+3. Student joins a pathway, sets a learning goal, submits fictional certification information and adds a demo evidence *description*.
+4. Reviewer sees the record in the Review Queue, saves the manual verification checklist, then approves or requests revisions in the Certification Registry.
+5. Student views in-app notification, updated pathway coverage, and an unofficial printable portfolio.
+6. Admin visits Operations and Analytics to show backlog, risk, trends, audit log and CSV reports.
+7. Verify student accounts cannot see other student records, checklists, or admin dashboards.
+
+## Safety, privacy and limitations
+
+- No real certificate file upload/storage. Do not enter actual student records or institutional secrets.
+- Pathway progress is a **demonstration heuristic** matching *approved* certificate title + issuer to catalog entries; it is not official credit articulation, program completion or third-party certification verification.
+- Reviewer checklist is an attestation written into D1; it does not automatically authenticate credentials.
+- This upgrade uses **free tier** GitHub Pages + Cloudflare Worker/D1 without adding R2, billing or subscription dependencies. Stay within free limits; available quotas and terms may change.
+- Existing Worker authentication remains intact; PBKDF2 100,000 iterations is a known Cloudflare compatibility workaround, not evidence of security-audit readiness.
+- Code syntax and SQLite migration checks pass; **live Cloudflare integration and comprehensive security tests have not been performed**.
+
+## Rollback
+
+- Installer backup: `YOUR_PROJECT/.local-backups/pre-v4-TIMESTAMP` (ignored from Git).
+- D1 export backup: `~/Desktop/pgcc-cloudflare-backups/pgcc-d1-pre-v4-TIMESTAMP.sql`.
+- To roll back UI/API, restore `worker/index.js`, `frontend/app.js`, `frontend/styles.css`, and `frontend/index.html` from the local backup, redeploy Worker, commit and push. Additive v4 tables may safely remain unused. Do **not** blindly import an old D1 backup over new live data.
