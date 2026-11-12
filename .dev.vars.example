@@ -1,0 +1,2 @@
+# Copy to .dev.vars for LOCAL development, never commit .dev.vars
+BOOTSTRAP_TOKEN=choose-a-long-random-setup-secret

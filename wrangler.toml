@@ -1,0 +1,12 @@
+name = "pgcc-cert-tracker-api"
+main = "worker/index.js"
+compatibility_date = "2026-10-01"
+
+[vars]
+ALLOWED_ORIGINS = "https://Blaketherank.github.io,http://localhost:5173"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "pgcc-cert-tracker"
+database_id = "ae14be5a-75a3-426a-9ff4-f6c3f960ae8e"
+migrations_dir = "migrations"
