@@ -21,6 +21,10 @@ async function derive(password,salt,iterations=ITERATIONS){
 }
 async function hashPassword(password){const salt=hex(crypto.getRandomValues(new Uint8Array(16))); return {salt,hash:await derive(password,salt),iterations:ITERATIONS};}
 function strong(password){return typeof password==='string' && password.length>=12 && password.length<=128 && /[A-Za-z]/.test(password) && /\d/.test(password);}
+async function notify(env,userId,title,message,certId=null){
+ await env.DB.prepare('INSERT INTO notifications (id,user_id,title,message,certification_id) VALUES (?,?,?,?,?)')
+  .bind(uuid(),userId,clean(title,160),clean(message,800),certId).run();
+}
 async function audit(env,actor,event,target,metadata={}){await env.DB.prepare('INSERT INTO audit_log (id,actor_id,event,target_id,metadata) VALUES (?,?,?,?,?)').bind(uuid(),actor||null,event,target||null,JSON.stringify(metadata)).run();}
 async function getUser(req,env){
  const a=req.headers.get('authorization')||''; if(!a.startsWith('Bearer ')) return null;
@@ -87,7 +91,7 @@ async function route(req,env,path){
   const existing=await env.DB.prepare('SELECT id FROM users WHERE email=?').bind(email).first();if(existing)return fail('Email already exists',409);
   const p=await hashPassword(b.password),uid=uuid();
   await env.DB.prepare('INSERT INTO users (id,email,full_name,role,password_hash,password_salt,password_iterations) VALUES (?,?,?,?,?,?,?)').bind(uid,email,name,role,p.hash,p.salt,p.iterations).run();
-  await audit(env,u.id,'user_created',uid,{role});return json({id:uid},201);
+  await audit(env,u.id,'user_created',uid,{role});await notify(env,uid,'Account created','Your '+role+' account has been created.',null);return json({id:uid},201);
  },['admin']);
  if(root==='api'&&id==='users'&&segments.length===4&&action&&segments[3]==='active'&&method==='PATCH')return withAuth(req,env,async u=>{
   if(action===u.id)return fail('Cannot deactivate yourself');
@@ -137,7 +141,7 @@ async function route(req,env,path){
    if(c.status!=='pending')return fail('Only pending submissions can be reviewed',409);
    if(!c.proof_key && status==='approved')return fail('Record demo evidence before approval');
    await env.DB.prepare('UPDATE certifications SET status=?,notes=?,reviewed_by=?,reviewed_at=?,updated_at=? WHERE id=? AND status=?').bind(status,notes,u.id,now(),now(),certId,'pending').run();
-   await audit(env,u.id,'certification_reviewed',certId,{status});return json({ok:true});
+   await audit(env,u.id,'certification_reviewed',certId,{status});await notify(env,c.student_id,'Certification '+status.replace('_',' '),c.title+(notes?' — '+notes:''),certId);return json({ok:true});
   },['reviewer','admin']);
  }
  if(method==='GET'&&path==='/api/reports/summary')return withAuth(req,env,async u=>{
@@ -146,12 +150,84 @@ async function route(req,env,path){
   const totals=(await env.DB.prepare('SELECT COUNT(*) AS students FROM users WHERE role=\'student\' AND active=1').first());
   return json({counts,issuers,students:totals.students});
  },['reviewer','admin']);
+ // v2: personal notification center (no email or paid push provider required)
+ if(method==='GET' && path==='/api/notifications')return withAuth(req,env,async u=>{
+  const items=(await env.DB.prepare('SELECT id,title,message,certification_id,is_read,created_at FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 100').bind(u.id).all()).results;
+  return json({items,unread:items.filter(x=>!x.is_read).length});
+ });
+ if(method==='PATCH' && /^\/api\/notifications\/[0-9a-f-]+\/read$/.test(path))return withAuth(req,env,async u=>{
+  const id=path.split('/')[3];const change=await env.DB.prepare('UPDATE notifications SET is_read=1 WHERE id=? AND user_id=?').bind(id,u.id).run();
+  return change.meta.changes?json({ok:true}):fail('Notification not found',404);
+ });
+ // v2: advanced reviewer analytics with single DB query per metric
+ if(method==='GET' && path==='/api/reports/advanced')return withAuth(req,env,async u=>{
+  const [timeline,expiring,reviewers,activity]=await Promise.all([
+   env.DB.prepare("SELECT substr(created_at,1,7) month, COUNT(*) submitted, SUM(CASE WHEN status='approved' THEN 1 ELSE 0 END) approved FROM certifications GROUP BY substr(created_at,1,7) ORDER BY month DESC LIMIT 12").all(),
+   env.DB.prepare("SELECT c.id,c.title,c.issuer,c.expires_on,u.full_name student_name FROM certifications c JOIN users u ON u.id=c.student_id WHERE c.status='approved' AND c.expires_on IS NOT NULL AND c.expires_on <= date('now','+60 days') ORDER BY c.expires_on LIMIT 50").all(),
+   env.DB.prepare("SELECT u.full_name reviewer,COUNT(*) reviewed FROM certifications c JOIN users u ON u.id=c.reviewed_by WHERE c.reviewed_by IS NOT NULL GROUP BY c.reviewed_by ORDER BY reviewed DESC LIMIT 20").all(),
+   env.DB.prepare("SELECT ROUND(AVG((julianday(reviewed_at)-julianday(created_at))*24),1) avg_review_hours FROM certifications WHERE reviewed_at IS NOT NULL").first()
+  ]);
+  return json({timeline:timeline.results.reverse(),expiring:expiring.results,reviewers:reviewers.results,avg_review_hours:activity.avg_review_hours});
+ },['reviewer','admin']);
+ // v2: limited-action review queue, indexed in D1 for speed
+ if(method==='GET' && path==='/api/review-queue')return withAuth(req,env,async u=>{
+  const items=(await env.DB.prepare("SELECT c.id,c.title,c.issuer,c.created_at,c.earned_on,c.proof_name,u.full_name student_name FROM certifications c JOIN users u ON u.id=c.student_id WHERE c.status='pending' ORDER BY c.created_at ASC LIMIT 100").all()).results;
+  return json({items});
+ },['reviewer','admin']);
+ // v3: discoverable certification catalog, curated and maintained by administrators
+ if(path==='/api/catalog' && method==='GET')return withAuth(req,env,async u=>json({items:(await env.DB.prepare('SELECT id,title,issuer,category,level,description,verification_url,active FROM catalog WHERE active=1 ORDER BY category,title LIMIT 200').all()).results}));
+ if(path==='/api/catalog' && method==='POST')return withAuth(req,env,async u=>{
+  const b=await parseJSON(req),title=clean(b.title,120),issuer=clean(b.issuer,120),category=clean(b.category,60)||'General',level=clean(b.level,30)||'Foundational',description=clean(b.description,600),verification_url=clean(b.verification_url,500);
+  if(title.length<2||issuer.length<2||!safeUrl(verification_url)||!['Foundational','Intermediate','Advanced','Expert'].includes(level))return fail('Valid certification title, issuer, level and HTTPS verification URL required');
+  const entry=uuid();await env.DB.prepare('INSERT INTO catalog (id,title,issuer,category,level,description,verification_url) VALUES (?,?,?,?,?,?,?)').bind(entry,title,issuer,category,level,description,verification_url).run();await audit(env,u.id,'catalog_created',entry);return json({id:entry},201);
+ },['admin']);
+ if(/^\/api\/catalog\/[^/]+$/.test(path)&&method==='DELETE')return withAuth(req,env,async u=>{
+  const id=segments[2],result=await env.DB.prepare('UPDATE catalog SET active=0 WHERE id=?').bind(id).run();if(!result.meta.changes)return fail('Catalog item not found',404);await audit(env,u.id,'catalog_archived',id);return json({ok:true});
+ },['admin']);
+ // v3: individual development plans, never visible to other students
+ if(path==='/api/goals'&&method==='GET')return withAuth(req,env,async u=>{
+  if(u.role!=='student')return json({items:[]});
+  return json({items:(await env.DB.prepare("SELECT g.*,c.issuer FROM student_goals g LEFT JOIN catalog c ON c.id=g.catalog_id WHERE g.student_id=? ORDER BY CASE g.status WHEN 'in_progress' THEN 0 WHEN 'planned' THEN 1 ELSE 2 END, g.target_date IS NULL,g.target_date LIMIT 200").bind(u.id).all()).results});
+ });
+ if(path==='/api/goals'&&method==='POST')return withAuth(req,env,async u=>{
+  const b=await parseJSON(req),title=clean(b.title,120),notes=clean(b.notes,500),target=clean(b.target_date,10),catalog=clean(b.catalog_id,80)||null;
+  if(title.length<2||(target&&!isDate(target)))return fail('Valid goal title and date required');
+  if(catalog){const exists=await env.DB.prepare('SELECT id FROM catalog WHERE id=? AND active=1').bind(catalog).first();if(!exists)return fail('Catalog item not found',404)}
+  const id=uuid();await env.DB.prepare('INSERT INTO student_goals (id,student_id,catalog_id,title,target_date,notes) VALUES (?,?,?,?,?,?)').bind(id,u.id,catalog,title,target||null,notes).run();await audit(env,u.id,'goal_created',id);return json({id},201);
+ },['student']);
+ if(/^\/api\/goals\/[^/]+$/.test(path)&&method==='PATCH')return withAuth(req,env,async u=>{
+  const b=await parseJSON(req),status=clean(b.status,20);if(!['planned','in_progress','completed'].includes(status))return fail('Invalid goal status');
+  const id=segments[2],result=await env.DB.prepare('UPDATE student_goals SET status=? WHERE id=? AND student_id=?').bind(status,id,u.id).run();if(!result.meta.changes)return fail('Goal not found',404);
+  await audit(env,u.id,'goal_updated',id,{status});return json({ok:true});
+ },['student']);
+ if(/^\/api\/goals\/[^/]+$/.test(path)&&method==='DELETE')return withAuth(req,env,async u=>{
+  const id=segments[2],result=await env.DB.prepare('DELETE FROM student_goals WHERE id=? AND student_id=?').bind(id,u.id).run();if(!result.meta.changes)return fail('Goal not found',404);
+  await audit(env,u.id,'goal_deleted',id);return json({ok:true});
+ },['student']);
+ // v3: campus news, scoped by role, with administrator authoring
+ if(path==='/api/announcements'&&method==='GET')return withAuth(req,env,async u=>json({items:(await env.DB.prepare("SELECT id,title,body,audience,created_at FROM announcements WHERE active=1 AND (audience='all' OR audience=? OR ?='admin') ORDER BY created_at DESC LIMIT 40").bind(u.role,u.role).all()).results}));
+ if(path==='/api/announcements'&&method==='POST')return withAuth(req,env,async u=>{
+  const b=await parseJSON(req),title=clean(b.title,140),body=clean(b.body,1500),audience=clean(b.audience,20)||'all';
+  if(title.length<3||body.length<5||!['all','student','reviewer','admin'].includes(audience))return fail('Title, message and valid audience required');
+  const id=uuid();await env.DB.prepare('INSERT INTO announcements (id,title,body,audience,author_id) VALUES (?,?,?,?,?)').bind(id,title,body,audience,u.id).run();await audit(env,u.id,'announcement_created',id,{audience});return json({id},201);
+ },['admin']);
+ if(/^\/api\/announcements\/[^/]+$/.test(path)&&method==='DELETE')return withAuth(req,env,async u=>{
+  const id=segments[2],result=await env.DB.prepare('UPDATE announcements SET active=0 WHERE id=?').bind(id).run();if(!result.meta.changes)return fail('Announcement not found',404);
+  await audit(env,u.id,'announcement_archived',id);return json({ok:true});
+ },['admin']);
+ // v3: per-certification activity timeline, protected with ownership check
+ if(/^\/api\/certifications\/[^/]+\/history$/.test(path)&&method==='GET')return withAuth(req,env,async u=>{
+  const certId=segments[2],c=await env.DB.prepare('SELECT student_id FROM certifications WHERE id=?').bind(certId).first();if(!c)return fail('Certification not found',404);
+  if(!reviewer(u)&&c.student_id!==u.id)return fail('Not authorized',403);
+  const events=(await env.DB.prepare("SELECT a.event,a.occurred_at,u.full_name AS actor_name FROM audit_log a LEFT JOIN users u ON u.id=a.actor_id WHERE a.target_id=? AND a.event LIKE 'certification_%' ORDER BY a.occurred_at DESC LIMIT 50").bind(certId).all()).results;
+  return json({items:events});
+ });
  if(method==='GET'&&path==='/api/audit')return withAuth(req,env,async u=>json({items:(await env.DB.prepare('SELECT a.*,u.full_name AS actor_name FROM audit_log a LEFT JOIN users u ON u.id=a.actor_id ORDER BY a.occurred_at DESC LIMIT 100').all()).results}),['admin']);
  return fail('Not found',404);
 }
 export default {async fetch(req,env){
  const origin=req.headers.get('origin');const allowed=(env.ALLOWED_ORIGINS||'').split(',').map(s=>s.trim()).filter(Boolean);
- const cors=origin&&allowed.includes(origin)?{'access-control-allow-origin':origin,'vary':'Origin','access-control-allow-headers':'Authorization, Content-Type, X-Bootstrap-Token','access-control-allow-methods':'GET, POST, PUT, PATCH, OPTIONS','access-control-max-age':'600'}:{};
+ const cors=origin&&allowed.includes(origin)?{'access-control-allow-origin':origin,'vary':'Origin','access-control-allow-headers':'Authorization, Content-Type, X-Bootstrap-Token','access-control-allow-methods':'GET, POST, PUT, PATCH, DELETE, OPTIONS','access-control-max-age':'600'}:{};
  const headers={'x-content-type-options':'nosniff','referrer-policy':'no-referrer','x-frame-options':'DENY','content-security-policy':"default-src 'none'; frame-ancestors 'none'",...cors};
  if(req.method==='OPTIONS')return new Response(null,{status:cors['access-control-allow-origin']?204:403,headers});
  const url=new URL(req.url);let response;
