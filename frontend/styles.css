@@ -78,3 +78,22 @@ body{background:#f5f7fa;color:#19304a;font-size:14px}
 .report-line strong{text-align:right}.report-meter{height:11px;background:#e8eef5;border-radius:30px;overflow:hidden}.report-meter div{height:100%;background:linear-gradient(90deg,#1672c3,#50a7df);border-radius:30px}
 .experience .top-icon:hover{background:#edf6fe;color:#0c5c9d}
 @media(max-width:650px){.report-line{grid-template-columns:85px 1fr 32px}.experience .subheading{flex-wrap:wrap}.search-results{grid-template-columns:1fr}}
+
+/* v7 — account editor and refined reporting surfaces */
+.student-record-tabs{display:flex;gap:9px;flex-wrap:wrap;margin:16px 0 22px;padding:10px;background:#f4f7fb;border:1px solid #dde6f1;border-radius:12px}
+.student-record-tabs a{padding:9px 13px;border-radius:8px;color:#153b63;text-decoration:none;font-size:13px;font-weight:600}
+.student-record-tabs a:hover,.student-record-tabs a:focus-visible{background:white;outline:2px solid #8ab8e8;outline-offset:1px}
+.record-tag{background:#e7f1fb;border-radius:999px;padding:8px 12px;color:#18476f;font-size:12px;font-weight:700}
+.profile-toggle{display:flex;gap:10px;align-items:center;margin:16px 0;font-weight:600}
+.profile-toggle input{width:18px;height:18px}
+.profile-readonly{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:16px}
+.profile-readonly>div{border-bottom:1px solid #e0e8f2;padding:8px 0}
+.profile-readonly dt{font-size:12px;color:#52677c}
+.profile-readonly dd{font-size:14px;font-weight:600;margin:5px 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.reset-inline{display:flex;gap:12px;align-items:end;flex-wrap:wrap}
+.reset-inline .field{flex:1;min-width:210px}
+.subtle-rule{border:0;border-top:1px solid #dfe7f1;margin:24px 0}
+.report-filter-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:15px;margin:16px 0}
+.report-metrics{margin:20px 0}
+.report-bars{margin-top:15px}
+@media(max-width:700px){.student-record-tabs{gap:2px}.student-record-tabs a{padding:8px}.reset-inline{align-items:stretch}.reset-inline .button{width:100%}}

@@ -7,10 +7,10 @@ import worker from '../worker/index.js';
 const base = new URL('../migrations/', import.meta.url);
 function makeEnv(){
   const sql = new DatabaseSync(':memory:');
-  for(const name of ['0001_initial.sql','0002_advanced.sql','0003_enterprise.sql','0004_ultimate.sql','0005_experience.sql','0006_polish.sql']){
+  for(const name of ['0001_initial.sql','0002_advanced.sql','0003_enterprise.sql','0004_ultimate.sql','0005_experience.sql','0006_polish.sql','0007_student_management.sql']){
     sql.exec(readFileSync(new URL(name,base),'utf8'));
   }
-  const DB={prepare(query){
+  const DB={batch(statements){sql.exec('BEGIN');try{const outcomes=statements.map(x=>x.run());sql.exec('COMMIT');return outcomes;}catch(e){sql.exec('ROLLBACK');throw e;}},prepare(query){
     let values=[];
     return {
       bind(...args){values=args;return this},
@@ -169,4 +169,45 @@ test('v6 global search, Student 360 privacy, reporting, security and safe demo s
  assert.equal((await request(env,'GET','/api/students',reviewer)).status,200);
  assert.equal((await request(env,'GET','/api/students/'+studentAccount.id+'/360',reviewer)).status,200);
  assert.equal((await request(env,'GET','/api/security/center',reviewer)).status,403);
+});
+
+test('v7 student account editing, sessions and reporting filters enforce permissions',async()=>{
+ const env=makeEnv(),password='TestAccountPass123';
+ assert.equal((await request(env,'POST','/api/setup',null,{full_name:'Administrator',email:'admin@test.example',password})).status,201);
+ const admin=(await request(env,'POST','/api/auth/login',null,{email:'admin@test.example',password})).body.token;
+ const created=await request(env,'POST','/api/users',admin,{full_name:'Avery Example',email:'avery@test.example',role:'student',password});
+ assert.equal(created.status,201,JSON.stringify(created.body));
+ const id=created.body.id;
+ const other=await request(env,'POST','/api/users',admin,{full_name:'Jordan Example',email:'jordan@test.example',role:'student',password});
+ assert.equal(other.status,201);
+ const reviewer=await request(env,'POST','/api/users',admin,{full_name:'Staff Reviewer',email:'staff@test.example',role:'reviewer',password});
+ assert.equal(reviewer.status,201);
+ const rv=(await request(env,'POST','/api/auth/login',null,{email:'staff@test.example',password})).body.token;
+ const st=(await request(env,'POST','/api/auth/login',null,{email:'avery@test.example',password})).body.token;
+ assert.equal((await request(env,'POST','/api/auth/password',rv,{current_password:password,new_password:'ChangedReviewer123'})).status,200);
+ assert.equal((await request(env,'POST','/api/auth/password',st,{current_password:password,new_password:'ChangedStudent123'})).status,200);
+ const target='/api/students/'+id+'/profile';
+ const payload={full_name:'Avery Updated',email:'avery.updated@test.example',department:'Technology',cohort:'Fall 2027',advisor:'Example Advisor',internal_reference:'SYNTHETIC-01',staff_notes:'Fictional sample only',active:true};
+ assert.equal((await request(env,'PATCH',target,rv,payload)).status,403);
+ assert.equal((await request(env,'PATCH',target,st,payload)).status,403);
+ assert.equal((await request(env,'PATCH',target,admin,{...payload,email:'jordan@test.example'})).status,409);
+ assert.equal((await request(env,'PATCH',target,admin,{...payload,full_name:'A'})).status,400);
+ const saved=await request(env,'PATCH',target,admin,payload);assert.equal(saved.status,200,JSON.stringify(saved.body));
+ const prof=await request(env,'GET','/api/students/'+id+'/360',rv);
+ assert.equal(prof.status,200);assert.equal(prof.body.student.full_name,'Avery Updated');assert.equal(prof.body.student.profile.cohort,'Fall 2027');
+ assert.equal((await request(env,'GET','/api/students/'+id+'/360',st)).status,403);
+ const reset=await request(env,'POST','/api/students/'+id+'/reset-password',admin,{temporary_password:'TemporaryReset123'});
+ assert.equal(reset.status,200,JSON.stringify(reset.body));
+ assert.equal((await request(env,'GET','/api/auth/me',st)).status,401);
+ const newLogin=await request(env,'POST','/api/auth/login',null,{email:'avery.updated@test.example',password:'TemporaryReset123'});
+ assert.equal(newLogin.status,200);assert.equal(newLogin.body.user.must_change_password,true);
+ assert.equal((await request(env,'PATCH',target,admin,{...payload,active:false})).status,200);
+ assert.equal((await request(env,'GET','/api/auth/me',newLogin.body.token)).status,401);
+ assert.equal((await request(env,'PATCH',target,admin,{...payload,active:true})).status,200);
+ const query=await request(env,'GET','/api/reports/studio?group=issuer&from=2026-01-01&to=2026-12-31&issuer=CompTIA',rv);
+ assert.equal(query.status,200,JSON.stringify(query.body));assert.ok(query.body.metrics);assert.ok(Array.isArray(query.body.trend));
+ assert.equal((await request(env,'GET','/api/reports/studio?group=student',rv)).status,200);
+ assert.equal((await request(env,'GET','/api/reports/studio?group=program&program=Network',rv)).status,200);
+ assert.equal((await request(env,'GET','/api/reports/studio?from=2026-12-31&to=2026-01-01',rv)).status,400);
+ assert.equal((await request(env,'GET','/api/reports/studio?group=issuer',st)).status,401);
 });

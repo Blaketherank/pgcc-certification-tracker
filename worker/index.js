@@ -429,27 +429,81 @@ async function route(req,env,path){
     env.DB.prepare('SELECT p.id,p.title,sp.joined_at FROM student_programs sp JOIN programs p ON p.id=sp.program_id WHERE sp.student_id=? LIMIT 30').bind(id).all(),
     env.DB.prepare("SELECT a.event,a.occurred_at FROM audit_log a WHERE a.actor_id=? AND a.event IN ('certification_created','goal_created','goal_updated','password_changed') ORDER BY a.occurred_at DESC LIMIT 15").bind(id).all()
   ]);
+  const profile=await env.DB.prepare('SELECT department,cohort,advisor,internal_reference,staff_notes,updated_at FROM student_profiles WHERE user_id=?').bind(id).first();
   await audit(env,u.id,'student_profile_viewed',id);
-  return json({student,certifications:certs.results,goals:goals.results,programs:pathways.results,activity:events.results});
+  return json({student:{...student,profile:profile||{department:'',cohort:'',advisor:'',internal_reference:'',staff_notes:'',updated_at:null}},certifications:certs.results,goals:goals.results,programs:pathways.results,activity:events.results});
  },['reviewer','admin']);
- // V6: bounded filtered reporting with whitelisted dimensions; no raw PII in aggregate response.
+ // V7: Student 360 account-management actions. Admin only. Reviewer read-only.
+ if(method==='PATCH'&&/^\/api\/students\/[0-9a-f-]+\/profile$/.test(path))return withAuth(req,env,async u=>{
+  const studentId=segments[2];
+  const existing=await env.DB.prepare("SELECT id,email,full_name,active FROM users WHERE id=? AND role='student'").bind(studentId).first();
+  if(!existing)return fail('Student not found',404);
+  const b=await parseJSON(req);
+  const name=clean(b.full_name,100),email=clean(b.email,200).toLowerCase();
+  const profile={department:clean(b.department,100),cohort:clean(b.cohort,60),advisor:clean(b.advisor,100),internal_reference:clean(b.internal_reference,60),staff_notes:clean(b.staff_notes,1200)};
+  if(name.length<2||!/^\S+@\S+\.\S+$/.test(email))return fail('Provide a valid student name and email');
+  if(b.active!==undefined&&typeof b.active!=='boolean')return fail('Active flag must be true or false');
+  const collision=await env.DB.prepare('SELECT id FROM users WHERE email=? AND id<>?').bind(email,studentId).first();
+  if(collision)return fail('Another account already uses that email',409);
+  const active=b.active===undefined?!!existing.active:b.active;
+  // Validation precedes mutation; D1 batch commits the profile and user record together.
+  await env.DB.batch([
+   env.DB.prepare('UPDATE users SET full_name=?,email=?,active=? WHERE id=? AND role=\'student\'').bind(name,email,active?1:0,studentId),
+   env.DB.prepare(`INSERT INTO student_profiles(user_id,department,cohort,advisor,internal_reference,staff_notes,updated_by,updated_at)
+    VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET department=excluded.department,cohort=excluded.cohort,
+    advisor=excluded.advisor,internal_reference=excluded.internal_reference,staff_notes=excluded.staff_notes,
+    updated_by=excluded.updated_by,updated_at=excluded.updated_at`).bind(studentId,profile.department,profile.cohort,profile.advisor,profile.internal_reference,profile.staff_notes,u.id,now())
+  ]);
+  if(!active&&existing.active)await env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(studentId).run();
+  await audit(env,u.id,'student_profile_updated',studentId,{account_status_changed:active!==!!existing.active,changed_fields:Object.keys(profile).filter(k=>!!profile[k]),identity_changed:name!==existing.full_name||email!==existing.email});
+  return json({ok:true});
+ },['admin']);
+ if(method==='POST'&&/^\/api\/students\/[0-9a-f-]+\/reset-password$/.test(path))return withAuth(req,env,async u=>{
+  const studentId=segments[2],b=await parseJSON(req);
+  const target=await env.DB.prepare("SELECT id FROM users WHERE id=? AND role='student'").bind(studentId).first();
+  if(!target)return fail('Student not found',404);
+  if(!strong(b.temporary_password))return fail('Temporary password needs 12+ characters including letters and numbers');
+  const p=await hashPassword(b.temporary_password);
+  await env.DB.batch([
+   env.DB.prepare('UPDATE users SET password_hash=?,password_salt=?,password_iterations=?,must_change_password=1 WHERE id=?').bind(p.hash,p.salt,p.iterations,studentId),
+   env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(studentId)
+  ]);
+  await audit(env,u.id,'student_password_reset',studentId);
+  return json({ok:true,message:'Temporary password applied, all student sessions revoked. Deliver password securely and require change at next login.'});
+ },['admin']);
+ // V7 Reporting Studio: validated filters, dates, issuer, metrics, trend and grouped summaries.
  if(method==='GET'&&path==='/api/reports/studio')return withAuth(req,env,async u=>{
   const params=new URL(req.url).searchParams;
   const dimension=clean(params.get('group'),20)||'status';
   const status=clean(params.get('status'),30);
-  if(!['status','issuer','month','program'].includes(dimension))return fail('Invalid report dimension');
+  const issuer=clean(params.get('issuer'),100);
+  const from=clean(params.get('from'),10),to=clean(params.get('to'),10);
+  const program=clean(params.get('program'),100);
+  if(!['status','issuer','month','program','student'].includes(dimension))return fail('Invalid report dimension');
   if(status&&!['pending','approved','rejected','needs_revision'].includes(status))return fail('Invalid status filter');
-  let query,bind=[];
+  if((from&&!isDate(from))||(to&&!isDate(to))||(from&&to&&from>to))return fail('Invalid date range');
+  if(issuer.length>100||program.length>100)return fail('Invalid filter');
+  const where=[],bind=[];
+  if(status){where.push('c.status=?');bind.push(status);}
+  if(issuer){where.push('instr(lower(c.issuer),lower(?))>0');bind.push(issuer);}
+  if(from){where.push('substr(c.created_at,1,10)>=?');bind.push(from);}
+  if(to){where.push('substr(c.created_at,1,10)<=?');bind.push(to);}
+  if(program){where.push('EXISTS (SELECT 1 FROM student_programs sp2 JOIN programs p2 ON p2.id=sp2.program_id WHERE sp2.student_id=c.student_id AND instr(lower(p2.title),lower(?))>0)');bind.push(program);}
+  const filter=where.length?' WHERE '+where.join(' AND '):'';
+  const expr={status:'c.status',issuer:'c.issuer',month:'substr(c.created_at,1,7)',student:'u.full_name'}[dimension];
+  let sql;
   if(dimension==='program'){
-    query=`SELECT p.title label,COUNT(DISTINCT c.id) total FROM programs p LEFT JOIN student_programs sp ON sp.program_id=p.id LEFT JOIN certifications c ON c.student_id=sp.student_id ${status?'AND c.status=?':''} GROUP BY p.id ORDER BY total DESC LIMIT 30`;
-    if(status)bind=[status];
+   sql=`SELECT p.title label,COUNT(DISTINCT c.id) total FROM certifications c JOIN users u ON u.id=c.student_id JOIN student_programs sp ON sp.student_id=c.student_id JOIN programs p ON p.id=sp.program_id ${filter} GROUP BY p.id ORDER BY total DESC LIMIT 50`;
   }else{
-    const expr={status:'c.status',issuer:'c.issuer',month:'substr(c.created_at,1,7)'}[dimension];
-    query=`SELECT ${expr} label,COUNT(*) total FROM certifications c ${status?'WHERE c.status=?':''} GROUP BY ${expr} ORDER BY total DESC LIMIT 40`;
-    if(status)bind=[status];
+   sql=`SELECT ${expr} label,COUNT(*) total FROM certifications c JOIN users u ON u.id=c.student_id ${filter} GROUP BY ${expr} ORDER BY total DESC LIMIT 50`;
   }
-  const rows=(await env.DB.prepare(query).bind(...bind).all()).results;
-  return json({group:dimension,status:status||'all',rows,disclaimer:dimension==='program'?'Program membership counts can overlap; each student may belong to multiple programs.':'Aggregate demonstration records only.'});
+  const [rows,metrics,trend,issuers]=await Promise.all([
+   env.DB.prepare(sql).bind(...bind).all(),
+   env.DB.prepare(`SELECT COUNT(*) total, SUM(CASE WHEN c.status='approved' THEN 1 ELSE 0 END) approved,SUM(CASE WHEN c.status='pending' THEN 1 ELSE 0 END) pending,SUM(CASE WHEN c.status='needs_revision' THEN 1 ELSE 0 END) revisions,COUNT(DISTINCT c.student_id) students FROM certifications c ${filter}`).bind(...bind).first(),
+   env.DB.prepare(`SELECT substr(c.created_at,1,7) month,COUNT(*) total FROM certifications c ${filter} GROUP BY substr(c.created_at,1,7) ORDER BY month DESC LIMIT 12`).bind(...bind).all(),
+   env.DB.prepare('SELECT DISTINCT issuer FROM certifications ORDER BY issuer LIMIT 100').all()
+  ]);
+  return json({group:dimension,status:status||'all',issuer,from,to,program,rows:rows.results,metrics:{total:metrics.total||0,approved:metrics.approved||0,pending:metrics.pending||0,revisions:metrics.revisions||0,students:metrics.students||0},trend:trend.results.reverse(),issuers:issuers.results.map(x=>x.issuer),disclaimer:dimension==='program'?'Program membership counts can overlap; totals are unique certifications.':'Data is from the demonstration registry. Reports may include fictional records.'});
  },['reviewer','admin']);
  // V6: staff security dashboard. Does not reveal raw tokens, password hashes or IP data.
  if(method==='GET'&&path==='/api/security/center')return withAuth(req,env,async u=>{

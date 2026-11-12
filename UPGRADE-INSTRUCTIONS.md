@@ -1,34 +1,35 @@
-# Upgrade v5 → v6 without recreating accounts
+# v6 → v7 — Install without resetting authentication
 
-**Requires a working v5 installation.** Your last confirmed existing project folder was `~/Downloads/pgcc-certification-tracker`. This ZIP has safe placeholder configuration and MUST be installed into the existing configured repository, not deployed as an independent project.
+Use your existing working repository at `~/Downloads/pgcc-certification-tracker`.
 
-1. Download and extract this ZIP into Downloads (folder `PGCC-Certification-Tracker-ENTERPRISE-POLISH-v6`).
-2. In Mac Terminal:
+1. Download and extract the v7 ZIP into Downloads.
+2. Run:
    ```bash
-   cd "$HOME/Downloads/PGCC-Certification-Tracker-ENTERPRISE-POLISH-v6"
+   cd "$HOME/Downloads/PGCC-Certification-Tracker-STUDENT360-REPORTING-v7"
    bash install-upgrade.sh "$HOME/Downloads/pgcc-certification-tracker"
    ```
-3. The install script checks for v5, backs up your local source under `.local-backups/`, preserves `wrangler.toml`, `frontend/config.js`, `.git`, previous migrations, and tests the new code. **It does not touch your live database.**
-4. Then **only after the install script succeeds**, run:
+   This validates the v6 migration, creates a local source-code backup under `.local-backups/`, and installs v7 locally. It runs JavaScript syntax checks and four integration tests. It does not alter Cloudflare or the live database.
+3. To back up and deploy:
    ```bash
    bash deploy-upgrade.sh "$HOME/Downloads/pgcc-certification-tracker"
    ```
-5. The deploy script first runs syntax and integration tests, exports the live D1 database to `~/Desktop/pgcc-cloudflare-backups/`, checks backup existence, and asks for explicit `DEPLOY`. It then runs migration, deploys the existing Worker, and pushes the frontend to the existing GitHub repository.
-6. Confirm GitHub Actions shows a green check, then sign in at `https://blaketherank.github.io/pgcc-certification-tracker/` with your **existing** administrator account. You may need to sign in again if your browser session expires.
+   The script exports your actual D1 database under `~/Desktop/pgcc-cloudflare-backups/`, verifies the file is nonempty, and asks you to type `DEPLOY` before applying migration 0007, updating the existing Worker, and pushing to your GitHub repository. **Stop if any step fails.** Never rerun `/api/setup`.
+4. Check [GitHub Actions](https://github.com/blaketherank/pgcc-certification-tracker/actions) for a green deployment and then open [the site](https://blaketherank.github.io/pgcc-certification-tracker/). Hard-refresh if necessary.
 
-## Functional verification
+## Acceptance checklist
 
-- Login as administrator. Open Global Search, Student 360, Reporting Studio, Security Center and Demo Lab.
-- Create the fictional demo accounts with Demo Lab if not created previously; securely retain passwords shown once. Never send them in chat or add them to Git.
-- In Demo Lab click **Add Fictional Sample Records** after provisioning the demo student accounts. This calls the administrator-only demo scenario endpoint, is idempotent, and does not delete or overwrite existing records.
-- Open Report Studio and export aggregated CSV; do not treat aggregate demo metrics as real college outcomes.
-- Verify that student accounts cannot access Student 360, Reporting Studio, or Security Center; reviewers can access Student 360 and reports but not Security Center.
-- Confirm legacy submission/approval flows and notifications continue working.
+- Admin login still works; reviewer and student logins still work.
+- Admin opens Student 360 > a student > Account & Profile, changes a fictional cohort and saves. Reload and verify persisted values.
+- Reviewer can open the same profile but sees read-only details. Student cannot open staff directory/profile APIs.
+- Admin changes a fictional student's account email, confirms the previous email cannot sign in, and that the new email can.
+- Admin uses Reset password with a fictional account; existing sessions are revoked, new password works, and the student is required to change it.
+- Admin can deactivate/reactivate a fictional student; inactive student cannot log in.
+- Reporting Studio filters by issuer, status, date and program; chart totals and exported CSV match the selected filters.
+- Test legacy submission, evidence description, verification checklist, approval and notifications.
+- Check Developer Tools for console/network errors; check Worker's logs for any 500 errors.
 
-## If the upgrade fails
+## Limits of validation
 
-Stop on any error. The installer keeps a local source backup, and the deploy script exports a D1 backup before migration. Do not delete the live D1 database, call `/api/setup`, or attempt to regenerate the administrator account. If migration or Worker deployment fails, inspect output before re-running; backups alone are not automatic rollback.
+Offline integration tests cover key server workflows. The Playwright browser smoke test couldn't run in the build environment because browser navigation was blocked by its administrator policy. Therefore no claim is made that every browser control has been exercised. Perform the acceptance checklist on your live test environment using fictional data before presenting.
 
-## Limitations
-
-The v6 code passes offline unit/integration testing but has **not** been deployed to your Cloudflare account in this environment. Cloudflare free-tier CPU and query quotas still apply. Password hashing stays at the supported 100,000 PBKDF2 iterations; this is a prototype compatibility compromise, not a claim of production-grade credential storage. Secure cookies, MFA, password resets, complete record-level authorization analysis, and professional vulnerability testing remain future work.
+Do not enter real student records or confidential personal information into this prototype.
