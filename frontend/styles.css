@@ -97,3 +97,8 @@ body{background:#f5f7fa;color:#19304a;font-size:14px}
 .report-metrics{margin:20px 0}
 .report-bars{margin-top:15px}
 @media(max-width:700px){.student-record-tabs{gap:2px}.student-record-tabs a{padding:8px}.reset-inline{align-items:stretch}.reset-inline .button{width:100%}}
+
+/* Shared demonstration account controls */
+.demo-password-panel{margin-top:24px;padding:20px;border:1px solid #dce4f1;border-radius:12px;background:#f8faff}
+.demo-password-panel form{display:grid;gap:12px;max-width:540px}
+.demo-password-panel input,.demo-password-panel select{width:100%;min-height:42px}

@@ -36,8 +36,11 @@ async function getUser(req,env){
 const publicUser = u => ({id:u.id,email:u.email,full_name:u.full_name,role:u.role,must_change_password:!!u.must_change_password});
 const reviewer = u => ['admin','reviewer'].includes(u.role);
 const admin = u => u.role==='admin';
+// Only these dedicated fictional demonstration accounts can use a reusable team password.
+const DEMO_ACCOUNTS = Object.freeze({avery:{name:'Avery Morgan',role:'student',email:'avery.demo@demo.example.test'},jordan:{name:'Jordan Lee',role:'student',email:'jordan.demo@demo.example.test'},taylor:{name:'Taylor Rivera',role:'reviewer',email:'taylor.demo@demo.example.test'}});
+const isDemoAccount = email => Object.values(DEMO_ACCOUNTS).some(a=>a.email===email);
 async function loginRate(env,key){const row=await env.DB.prepare('SELECT count,window_start FROM login_attempts WHERE key=?').bind(key).first(); if(row && Date.now()-Date.parse(row.window_start)<15*60*1000 && row.count>=8) return false; return true;}
-async function markAttempt(env,key,success){if(success){await env.DB.prepare('DELETE FROM login_attempts WHERE key=?').bind(key).run();return;} const stamp=now(); await env.DB.prepare(`INSERT INTO login_attempts (key,count,window_start) VALUES (?,1,?) ON CONFLICT(key) DO UPDATE SET count=CASE WHEN julianday(?) - julianday(window_start)>15.0/1440 THEN 1 ELSE count+1 END,window_start=CASE WHEN julianday(?) - julianday(window_start)>15.0/1440 THEN ? ELSE window_start END`).bind(key,stamp,stamp,stamp,stamp,stamp).run();}
+async function markAttempt(env,key,success){if(success){await env.DB.prepare('DELETE FROM login_attempts WHERE key=?').bind(key).run();return;} const stamp=now(); await env.DB.prepare(`INSERT INTO login_attempts (key,count,window_start) VALUES (?,1,?) ON CONFLICT(key) DO UPDATE SET count=CASE WHEN julianday(?) - julianday(window_start)>15.0/1440 THEN 1 ELSE count+1 END,window_start=CASE WHEN julianday(?) - julianday(window_start)>15.0/1440 THEN ? ELSE window_start END`).bind(key,stamp,stamp,stamp,stamp).run();}
 async function withAuth(req,env,handler,roles=null){const u=await getUser(req,env); if(!u) return fail('Please sign in',401);if(roles&&!roles.includes(u.role)) return fail('Not authorized',403);if(u.must_change_password) return fail('Change your temporary password first',403);return handler(u);}
 function validateCert(b){
  const title=clean(b.title,120),issuer=clean(b.issuer,120),credential_id=clean(b.credential_id,120),verification_url=clean(b.verification_url,500),earned_on=clean(b.earned_on,10),expires_on=clean(b.expires_on,10);
@@ -97,6 +100,7 @@ async function route(req,env,path){
  if(method==='POST' && path==='/api/auth/password'){
   const u=await getUser(req,env);if(!u)return fail('Please sign in',401);
   const b=await parseJSON(req),stored=await env.DB.prepare('SELECT * FROM users WHERE id=?').bind(u.id).first();
+  if(isDemoAccount(stored.email)) return fail('This shared demonstration password is managed by the administrator. Contact your group administrator to change it.',403);
   if(await derive(String(b.current_password||''),stored.password_salt,stored.password_iterations)!==stored.password_hash) return fail('Current password is wrong',403);
   if(!strong(b.new_password))return fail('New password requires 12+ characters, including letters and numbers');
   const p=await hashPassword(b.new_password);
@@ -382,14 +386,30 @@ async function route(req,env,path){
  // V5: One demo account per call: avoids multiple PBKDF2 hashes in a single Free Worker request.
  if(method==='POST'&&path==='/api/demo/account')return withAuth(req,env,async u=>{
   const b=await parseJSON(req),which=clean(b.which,20);
-  const specs={avery:['Avery Morgan','student','avery.demo@demo.example.test'],jordan:['Jordan Lee','student','jordan.demo@demo.example.test'],taylor:['Taylor Rivera','reviewer','taylor.demo@demo.example.test']};
-  if(!Object.hasOwn(specs,which))return fail('Choose avery, jordan or taylor');
-  const [name,role,email]=specs[which];
-  if(await env.DB.prepare('SELECT id FROM users WHERE email=?').bind(email).first())return fail('This demo account already exists. Temporary passwords are not recoverable.',409);
+  const spec=DEMO_ACCOUNTS[which];
+  if(!spec)return fail('Choose avery, jordan or taylor');
+  const {name,role,email}=spec;
+  if(await env.DB.prepare('SELECT id FROM users WHERE email=?').bind(email).first())return fail('This demo account already exists. Use Set / Reset Shared Password below instead.',409);
   const pw='Demo-'+hex(crypto.getRandomValues(new Uint8Array(12)))+'z9',p=await hashPassword(pw),id=uuid();
-  await env.DB.prepare('INSERT INTO users(id,email,full_name,role,password_hash,password_salt,password_iterations,must_change_password) VALUES(?,?,?,?,?,?,?,1)').bind(id,email,name,role,p.hash,p.salt,p.iterations).run();
-  await audit(env,u.id,'demo_account_created',id,{role});
-  return json({account:{name,email,role,temporary_password:pw},warning:'Copy this password privately now; it cannot be retrieved and must be changed on first login.'},201);
+  await env.DB.prepare('INSERT INTO users(id,email,full_name,role,password_hash,password_salt,password_iterations,must_change_password) VALUES(?,?,?,?,?,?,?,0)').bind(id,email,name,role,p.hash,p.salt,p.iterations).run();
+  await audit(env,u.id,'demo_account_created',id,{role,shared_demo:true});
+  return json({account:{name,email,role,temporary_password:pw},warning:'This is a reusable demo-only password. Save it privately; students are NOT required to change it. Administrators may rotate it in Demo Lab.'},201);
+ },['admin']);
+ // v7.1: Admin-only assignment of reusable passwords to dedicated fictional demo accounts.
+ // Never operates on institutional/student accounts or unrestricted email input.
+ if(method==='POST'&&path==='/api/demo/shared-password')return withAuth(req,env,async u=>{
+  const b=await parseJSON(req),which=clean(b.which,20),password=String(b.password||'');
+  const spec=DEMO_ACCOUNTS[which];
+  if(!spec)return fail('Select a designated demonstration account');
+  if(!strong(password))return fail('Use 12–128 characters including letters and numbers');
+  const target=await env.DB.prepare('SELECT id,role,email FROM users WHERE email=?').bind(spec.email).first();
+  if(!target)return fail('Create this demo account in Demo Lab first',404);
+  if(target.role!==spec.role)return fail('Demo account role mismatch; no changes made',409);
+  const p=await hashPassword(password);
+  await env.DB.prepare('UPDATE users SET password_hash=?,password_salt=?,password_iterations=?,must_change_password=0 WHERE id=?').bind(p.hash,p.salt,p.iterations,target.id).run();
+  await env.DB.prepare('DELETE FROM sessions WHERE user_id=?').bind(target.id).run();
+  await audit(env,u.id,'demo_shared_password_set',target.id,{demo_only:true,role:target.role});
+  return json({ok:true,email:spec.email,message:'Reusable password saved. Existing sessions signed out; no first-login password change required.'});
  },['admin']);
  // V5: executive reporting scoped to authorized staff, with no unredacted student export.
  if(method==='GET'&&path==='/api/executive')return withAuth(req,env,async u=>{

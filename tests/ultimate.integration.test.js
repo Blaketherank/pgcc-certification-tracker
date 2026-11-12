@@ -93,10 +93,10 @@ test('v5 workflow tasks, role isolation, sessions, demo accounts and executive m
  assert.equal(studentLogin.status,200);
  const student=studentLogin.body.token;
  assert.equal((await request(env,'GET','/api/workflow/tasks',student)).status,403);
- assert.equal((await request(env,'POST','/api/auth/password',student,{current_password:studentAccount.temporary_password,new_password:'StudentNewPassword123'})).status,200);
+ assert.equal((await request(env,'POST','/api/auth/password',student,{current_password:studentAccount.temporary_password,new_password:'StudentNewPassword123'})).status,403);
  const reviewerLogin=await request(env,'POST','/api/auth/login',null,{email:reviewerAccount.email,password:reviewerAccount.temporary_password});
  const rev=reviewerLogin.body.token;
- assert.equal((await request(env,'POST','/api/auth/password',rev,{current_password:reviewerAccount.temporary_password,new_password:'ReviewerNewPassword123'})).status,200);
+ assert.equal((await request(env,'POST','/api/auth/password',rev,{current_password:reviewerAccount.temporary_password,new_password:'ReviewerNewPassword123'})).status,403);
  const cert=await request(env,'POST','/api/certifications',student,{title:'Cisco CCNA',issuer:'Cisco',earned_on:'2026-10-01'});
  assert.equal(cert.status,201,JSON.stringify(cert.body));
  const tasks=await request(env,'GET','/api/workflow/tasks',rev);
@@ -150,7 +150,7 @@ test('v6 global search, Student 360 privacy, reporting, security and safe demo s
  const temp=await request(env,'POST','/api/demo/account',a,{which:'jordan'});
  const sLogin=await request(env,'POST','/api/auth/login',null,{email:temp.body.account.email,password:temp.body.account.temporary_password});
  const student=sLogin.body.token;
- assert.equal((await request(env,'POST','/api/auth/password',student,{current_password:temp.body.account.temporary_password,new_password:'MoreSecureStudent12'})).status,200);
+ assert.equal((await request(env,'POST','/api/auth/password',student,{current_password:temp.body.account.temporary_password,new_password:'MoreSecureStudent12'})).status,403);
  assert.equal((await request(env,'GET','/api/students',student)).status,403);
  assert.equal((await request(env,'GET','/api/students/'+studentAccount.id+'/360',student)).status,403);
  assert.equal((await request(env,'GET','/api/reports/studio',student)).status,403);
@@ -210,4 +210,28 @@ test('v7 student account editing, sessions and reporting filters enforce permiss
  assert.equal((await request(env,'GET','/api/reports/studio?group=program&program=Network',rv)).status,200);
  assert.equal((await request(env,'GET','/api/reports/studio?from=2026-12-31&to=2026-01-01',rv)).status,400);
  assert.equal((await request(env,'GET','/api/reports/studio?group=issuer',st)).status,401);
+});
+
+
+test('admin-only reusable demo passwords do not force first login changes',async()=>{
+ const env=makeEnv(),pw='AdminExamplePassword321';
+ assert.equal((await request(env,'POST','/api/setup',null,{full_name:'Admin Demo',email:'admin@example.test',password:pw})).status,201);
+ const admin=(await request(env,'POST','/api/auth/login',null,{email:'admin@example.test',password:pw})).body.token;
+ const created=await request(env,'POST','/api/demo/account',admin,{which:'avery'});
+ assert.equal(created.status,201);
+ const first=await request(env,'POST','/api/auth/login',null,{email:created.body.account.email,password:created.body.account.temporary_password});
+ assert.equal(first.status,200);
+ assert.equal(first.body.user.must_change_password,false);
+ assert.equal((await request(env,'GET','/api/certifications',first.body.token)).status,200);
+ const newPassword='FictionalDemoPassword321';
+ assert.equal((await request(env,'POST','/api/demo/shared-password',first.body.token,{which:'avery',password:newPassword})).status,403);
+ assert.equal((await request(env,'POST','/api/demo/shared-password',admin,{which:'wrong',password:newPassword})).status,400);
+ assert.equal((await request(env,'POST','/api/demo/shared-password',admin,{which:'avery',password:'weak'})).status,400);
+ assert.equal((await request(env,'POST','/api/demo/shared-password',admin,{which:'avery',password:newPassword})).status,200);
+ assert.equal((await request(env,'GET','/api/auth/me',first.body.token)).status,401);
+ assert.equal((await request(env,'POST','/api/auth/login',null,{email:created.body.account.email,password:created.body.account.temporary_password})).status,401);
+ const after=await request(env,'POST','/api/auth/login',null,{email:created.body.account.email,password:newPassword});
+ assert.equal(after.status,200);
+ assert.equal(after.body.user.must_change_password,false);
+ assert.equal((await request(env,'POST','/api/auth/password',after.body.token,{current_password:newPassword,new_password:'AnotherDemoPassword123'})).status,403);
 });
